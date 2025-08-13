@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>unitree_navigation</name>
+  <version>0.1.0</version>
+  <description>Unitree四足机器人自主建图导航系统</description>
+
+  <maintainer email="your_email@example.com">Your Name</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  
+  <depend>roscpp</depend>
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>move_base_msgs</depend>
+  <depend>actionlib</depend>
+  <depend>unitree_legged_msgs</depend>
+  <depend>laser_geometry</depend>
+  <depend>tf2_sensor_msgs</depend>
+  <depend>pcl_ros</depend>
+  <depend>pcl_conversions</depend>
+  
+  <exec_depend>move_base</exec_depend>
+  <exec_depend>map_server</exec_depend>
+  <exec_depend>amcl</exec_depend>
+  <exec_depend>gmapping</exec_depend>
+  <exec_depend>rviz</exec_depend>
+  <exec_depend>fast_lio</exec_depend>
+
+  <export>
+  </export>
+</package>

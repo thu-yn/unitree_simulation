@@ -1,0 +1,4 @@
+control_frequency: 500.0
+max_linear_speed: 0.5
+max_angular_speed: 0.5
+robot_ip: 192.168.123.220

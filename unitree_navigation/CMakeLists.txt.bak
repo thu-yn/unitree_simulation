@@ -1,0 +1,70 @@
+cmake_minimum_required(VERSION 3.0.2)
+project(unitree_navigation)
+
+find_package(catkin REQUIRED COMPONENTS
+  roscpp
+  rospy
+  std_msgs
+  geometry_msgs
+  nav_msgs
+  sensor_msgs
+  tf2
+  tf2_ros
+  move_base_msgs
+  actionlib
+  unitree_legged_msgs
+  laser_geometry
+  tf2_sensor_msgs
+  pcl_ros
+  pcl_conversions
+  urdf
+)
+
+catkin_package(
+  INCLUDE_DIRS include
+  LIBRARIES unitree_navigation
+  CATKIN_DEPENDS roscpp rospy std_msgs geometry_msgs nav_msgs sensor_msgs tf2 tf2_ros move_base_msgs actionlib unitree_legged_msgs
+)
+
+include_directories(
+  include
+  ${catkin_INCLUDE_DIRS}
+)
+
+# 添加控制器库
+add_library(robot_controller
+  src/control/robot_controller.cpp
+)
+target_link_libraries(robot_controller
+  ${catkin_LIBRARIES}
+)
+
+# 添加控制器节点
+add_executable(robot_controller_node
+  src/control/robot_controller_node.cpp
+)
+target_link_libraries(robot_controller_node
+  robot_controller
+  ${catkin_LIBRARIES}
+)
+
+
+# 安装目标
+install(TARGETS robot_controller robot_controller_node navigation_node path_recorder cloud_processor footprint_publisher waypoint_navigation
+  ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+# 安装头文件
+install(DIRECTORY include/${PROJECT_NAME}/
+  DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
+  FILES_MATCHING PATTERN "*.h"
+)
+
+# 安装Python脚本
+catkin_install_python(PROGRAMS
+  scripts/map_saver_service.py
+  scripts/check_map.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
