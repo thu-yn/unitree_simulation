@@ -2,16 +2,17 @@
 // Created by lfc on 2021/2/28.
 //
 
+#include "livox_laser_simulation/livox_ode_multiray_shape.h"
+
 #include <gazebo/common/Assert.hh>
 #include <gazebo/common/Exception.hh>
 #include <gazebo/physics/World.hh>
-#include <gazebo/physics/ode/ODETypes.hh>
-#include <gazebo/physics/ode/ODELink.hh>
 #include <gazebo/physics/ode/ODECollision.hh>
+#include <gazebo/physics/ode/ODELink.hh>
+#include <gazebo/physics/ode/ODEMultiRayShape.hh>
 #include <gazebo/physics/ode/ODEPhysics.hh>
 #include <gazebo/physics/ode/ODERayShape.hh>
-#include <gazebo/physics/ode/ODEMultiRayShape.hh>
-#include "livox_laser_simulation/livox_ode_multiray_shape.h"
+#include <gazebo/physics/ode/ODETypes.hh>
 #include <ignition/math6/ignition/math.hh>
 
 
@@ -35,11 +36,11 @@ LivoxOdeMultiRayShape::LivoxOdeMultiRayShape(CollisionPtr _parent)
     dGeomSetCollideBits((dGeomID) this->raySpaceId, ~GZ_SENSOR_COLLIDE);
 
     // These three lines may be unessecary
-    ODELinkPtr pLink =
-        boost::static_pointer_cast<ODELink>(this->collisionParent->GetLink());
+    ODELinkPtr pLink = boost::static_pointer_cast<ODELink>(
+            this->collisionParent->GetLink());
     pLink->SetSpaceId(this->raySpaceId);
-    boost::static_pointer_cast<ODECollision>(this->collisionParent)->SetSpaceId(
-        this->raySpaceId);
+    boost::static_pointer_cast<ODECollision>(this->collisionParent)
+            ->SetSpaceId(this->raySpaceId);
 }
 
 //////////////////////////////////////////////////
@@ -56,7 +57,7 @@ LivoxOdeMultiRayShape::~LivoxOdeMultiRayShape()
 void LivoxOdeMultiRayShape::UpdateRays()
 {
     ODEPhysicsPtr ode = boost::dynamic_pointer_cast<ODEPhysics>(
-        this->GetWorld()->Physics());
+            this->GetWorld()->Physics());
 
     if (ode == NULL)
         gzthrow("Invalid physics engine. Must use ODE.");
@@ -67,19 +68,19 @@ void LivoxOdeMultiRayShape::UpdateRays()
         boost::recursive_mutex::scoped_lock lock(*ode->GetPhysicsUpdateMutex());
 
         // Do collision detection
-        dSpaceCollide2((dGeomID) (this->superSpaceId),
-                       (dGeomID) (ode->GetSpaceId()),
-                       this, &UpdateCallback);
+        dSpaceCollide2((dGeomID)(this->superSpaceId),
+                       (dGeomID)(ode->GetSpaceId()), this, &UpdateCallback);
     }
 }
 
 //////////////////////////////////////////////////
-void LivoxOdeMultiRayShape::UpdateCallback(void *_data, dGeomID _o1, dGeomID _o2)
+void LivoxOdeMultiRayShape::UpdateCallback(void *_data, dGeomID _o1,
+                                           dGeomID _o2)
 {
     dContactGeom contact;
     LivoxOdeMultiRayShape *self = NULL;
 
-    self = static_cast<LivoxOdeMultiRayShape*>(_data);
+    self = static_cast<LivoxOdeMultiRayShape *>(_data);
 
     // Check space
     if (dGeomIsSpace(_o1) || dGeomIsSpace(_o2))
@@ -100,20 +101,20 @@ void LivoxOdeMultiRayShape::UpdateCallback(void *_data, dGeomID _o1, dGeomID _o2
         // Get pointers to the underlying collisions
         if (dGeomGetClass(_o1) == dGeomTransformClass)
         {
-            collision1 = static_cast<ODECollision*>(
-                dGeomGetData(dGeomTransformGetGeom(_o1)));
+            collision1 = static_cast<ODECollision *>(
+                    dGeomGetData(dGeomTransformGetGeom(_o1)));
         }
         else
-            collision1 = static_cast<ODECollision*>(dGeomGetData(_o1));
+            collision1 = static_cast<ODECollision *>(dGeomGetData(_o1));
 
         if (dGeomGetClass(_o2) == dGeomTransformClass)
         {
-            collision2 =
-                static_cast<ODECollision*>(dGeomGetData(dGeomTransformGetGeom(_o2)));
+            collision2 = static_cast<ODECollision *>(
+                    dGeomGetData(dGeomTransformGetGeom(_o2)));
         }
         else
         {
-            collision2 = static_cast<ODECollision*>(dGeomGetData(_o2));
+            collision2 = static_cast<ODECollision *>(dGeomGetData(_o2));
         }
 
         GZ_ASSERT(collision1, "collision1 is null");
@@ -126,16 +127,16 @@ void LivoxOdeMultiRayShape::UpdateCallback(void *_data, dGeomID _o1, dGeomID _o2
         // that the ODE dRayClass is used *soley* by the RayCollision.
         if (dGeomGetClass(_o1) == dRayClass)
         {
-            rayCollision = static_cast<ODECollision*>(collision1);
-            hitCollision = static_cast<ODECollision*>(collision2);
+            rayCollision = static_cast<ODECollision *>(collision1);
+            hitCollision = static_cast<ODECollision *>(collision2);
             dGeomRaySetParams(_o1, 0, 0);
             dGeomRaySetClosestHit(_o1, 1);
         }
         else if (dGeomGetClass(_o2) == dRayClass)
         {
             GZ_ASSERT(rayCollision == NULL, "rayCollision is not null");
-            rayCollision = static_cast<ODECollision*>(collision2);
-            hitCollision = static_cast<ODECollision*>(collision1);
+            rayCollision = static_cast<ODECollision *>(collision2);
+            hitCollision = static_cast<ODECollision *>(collision1);
             dGeomRaySetParams(_o2, 0, 0);
             dGeomRaySetClosestHit(_o2, 1);
         }
@@ -148,7 +149,7 @@ void LivoxOdeMultiRayShape::UpdateCallback(void *_data, dGeomID _o1, dGeomID _o2
             if (n > 0)
             {
                 RayShapePtr shape = boost::static_pointer_cast<RayShape>(
-                    rayCollision->GetShape());
+                        rayCollision->GetShape());
                 if (contact.depth < shape->GetLength())
                 {
                     // gzerr << "LivoxOdeMultiRayShape UpdateCallback dSpaceCollide2 "
@@ -172,12 +173,12 @@ void LivoxOdeMultiRayShape::UpdateCallback(void *_data, dGeomID _o1, dGeomID _o2
 
 //////////////////////////////////////////////////
 void LivoxOdeMultiRayShape::AddRay(const ignition::math::Vector3d &_start,
-                              const ignition::math::Vector3d &_end)
+                                   const ignition::math::Vector3d &_end)
 {
     MultiRayShape::AddRay(_start, _end);
 
-    ODECollisionPtr odeCollision(new ODECollision(
-        this->collisionParent->GetLink()));
+    ODECollisionPtr odeCollision(
+            new ODECollision(this->collisionParent->GetLink()));
     odeCollision->SetName("ode_ray_collision");
     odeCollision->SetSpaceId(this->raySpaceId);
 
@@ -187,7 +188,8 @@ void LivoxOdeMultiRayShape::AddRay(const ignition::math::Vector3d &_start,
     ray->SetPoints(_start, _end);
     this->rays.push_back(ray);
 }
-void LivoxOdeMultiRayShape::Init() {
+void LivoxOdeMultiRayShape::Init()
+{
     ignition::math::Vector3d start, end, axis;
     double yawAngle, pitchAngle;
     // ignition::math::Quaternion ray;
@@ -227,28 +229,28 @@ void LivoxOdeMultiRayShape::Init() {
     minRange = this->rangeElem->Get<double>("min");
     maxRange = this->rangeElem->Get<double>("max");
 
-//    this->offset = this->collisionParent->GetRelativePose();
+    //    this->offset = this->collisionParent->GetRelativePose();
 
     // Create an array of ray collisions
-//    for (unsigned int j = 0; j < (unsigned int)vertSamples; ++j)
-//    {
-//        for (unsigned int i = 0; i < (unsigned int)horzSamples; ++i)
-//        {
-//            yawAngle = (horzSamples == 1) ? 0 :
-//                       i * yDiff / (horzSamples - 1) + horzMinAngle;
-//
-//            pitchAngle = (vertSamples == 1)? 0 :
-//                         j * pDiff / (vertSamples - 1) + vertMinAngle;
-//
-//            // since we're rotating a unit x vector, a pitch rotation will now be
-//            // around the negative y axis
-//            ray.SetFromEuler(math::Vector3(0.0, -pitchAngle, yawAngle));
-//            axis = this->offset.rot * ray * math::Vector3(1.0, 0.0, 0.0);
-//
-//            start = (axis * minRange) + this->offset.pos;
-//            end = (axis * maxRange) + this->offset.pos;
-//
-//            this->AddRay(start, end);
-//        }
-//    }
+    //    for (unsigned int j = 0; j < (unsigned int)vertSamples; ++j)
+    //    {
+    //        for (unsigned int i = 0; i < (unsigned int)horzSamples; ++i)
+    //        {
+    //            yawAngle = (horzSamples == 1) ? 0 :
+    //                       i * yDiff / (horzSamples - 1) + horzMinAngle;
+    //
+    //            pitchAngle = (vertSamples == 1)? 0 :
+    //                         j * pDiff / (vertSamples - 1) + vertMinAngle;
+    //
+    //            // since we're rotating a unit x vector, a pitch rotation will now be
+    //            // around the negative y axis
+    //            ray.SetFromEuler(math::Vector3(0.0, -pitchAngle, yawAngle));
+    //            axis = this->offset.rot * ray * math::Vector3(1.0, 0.0, 0.0);
+    //
+    //            start = (axis * minRange) + this->offset.pos;
+    //            end = (axis * maxRange) + this->offset.pos;
+    //
+    //            this->AddRay(start, end);
+    //        }
+    //    }
 }

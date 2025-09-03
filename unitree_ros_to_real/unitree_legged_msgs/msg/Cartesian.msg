@@ -1,3 +1,3 @@
-float32 x
-float32 y
-float32 z
+float32 x                    # X坐标
+float32 y                    # Y坐标  
+float32 z                    # Z坐标

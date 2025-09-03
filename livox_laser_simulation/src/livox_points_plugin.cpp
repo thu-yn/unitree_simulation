@@ -3,45 +3,64 @@
 //
 
 #include "livox_laser_simulation/livox_points_plugin.h"
+
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud.h>
+
+#include "livox_laser_simulation/livox_ode_multiray_shape.h"
+
+#include "livox_laser_simulation/csv_reader.hpp"
+
 #include <gazebo/physics/Model.hh>
 #include <gazebo/physics/MultiRayShape.hh>
 #include <gazebo/physics/PhysicsEngine.hh>
 #include <gazebo/physics/World.hh>
 #include <gazebo/sensors/RaySensor.hh>
 #include <gazebo/transport/Node.hh>
-#include "livox_laser_simulation/csv_reader.hpp"
-#include "livox_laser_simulation/livox_ode_multiray_shape.h"
 
-namespace gazebo {
+namespace gazebo
+{
 
 GZ_REGISTER_SENSOR_PLUGIN(LivoxPointsPlugin)
 
-LivoxPointsPlugin::LivoxPointsPlugin() {}
+LivoxPointsPlugin::LivoxPointsPlugin()
+{
+}
 
-LivoxPointsPlugin::~LivoxPointsPlugin() {}
+LivoxPointsPlugin::~LivoxPointsPlugin()
+{
+}
 
-void convertDataToRotateInfo(const std::vector<std::vector<double>> &datas, std::vector<AviaRotateInfo> &avia_infos) {
+void convertDataToRotateInfo(const std::vector<std::vector<double>> &datas,
+                             std::vector<AviaRotateInfo> &avia_infos)
+{
     avia_infos.reserve(datas.size());
     double deg_2_rad = M_PI / 180.0;
-    for (auto &data : datas) {
-        if (data.size() == 3) {
+    for (auto &data: datas)
+    {
+        if (data.size() == 3)
+        {
             avia_infos.emplace_back();
             avia_infos.back().time = data[0];
             avia_infos.back().azimuth = data[1] * deg_2_rad;
-            avia_infos.back().zenith = data[2] * deg_2_rad - M_PI_2;  //转化成标准的右手系角度
-        } else {
+            avia_infos.back().zenith =
+                    data[2] * deg_2_rad - M_PI_2;//转化成标准的右手系角度
+        }
+        else
+        {
             ROS_INFO_STREAM("data size is not 3!");
         }
     }
 }
 
-void LivoxPointsPlugin::Load(gazebo::sensors::SensorPtr _parent, sdf::ElementPtr sdf) {
+void LivoxPointsPlugin::Load(gazebo::sensors::SensorPtr _parent,
+                             sdf::ElementPtr sdf)
+{
     std::vector<std::vector<double>> datas;
     std::string file_name = sdf->Get<std::string>("csv_file_name");
     ROS_INFO_STREAM("load csv file name:" << file_name);
-    if (!CsvReader::ReadCsvFile(file_name, datas)) {
+    if (!CsvReader::ReadCsvFile(file_name, datas))
+    {
         ROS_INFO_STREAM("cannot get csv file!" << file_name << "will return !");
         return;
     }
@@ -56,7 +75,8 @@ void LivoxPointsPlugin::Load(gazebo::sensors::SensorPtr _parent, sdf::ElementPtr
     ROS_INFO_STREAM("ros topic name:" << curr_scan_topic);
     ros::init(argc, argv, curr_scan_topic);
     rosNode.reset(new ros::NodeHandle);
-    rosPointPub = rosNode->advertise<sensor_msgs::PointCloud>(curr_scan_topic, 5);
+    rosPointPub =
+            rosNode->advertise<sensor_msgs::PointCloud>(curr_scan_topic, 5);
 
     raySensor = _parent;
     auto sensor_pose = raySensor->Pose();
@@ -75,7 +95,8 @@ void LivoxPointsPlugin::Load(gazebo::sensors::SensorPtr _parent, sdf::ElementPtr
     // parentEntity = world->GetEntity(_parent->ParentName());
     parentEntity = this->world->EntityByName(_parent->ParentName());
     auto physics = world->Physics();
-    laserCollision = physics->CreateCollision("multiray", _parent->ParentName());
+    laserCollision =
+            physics->CreateCollision("multiray", _parent->ParentName());
     laserCollision->SetName("ray_sensor_collision");
     laserCollision->SetRelativePose(_parent->Pose());
     laserCollision->SetInitialRelativePose(_parent->Pose());
@@ -83,7 +104,8 @@ void LivoxPointsPlugin::Load(gazebo::sensors::SensorPtr _parent, sdf::ElementPtr
     laserCollision->SetShape(rayShape);
     samplesStep = sdfPtr->Get<int>("samples");
     downSample = sdfPtr->Get<int>("downsample");
-    if (downSample < 1) {
+    if (downSample < 1)
+    {
         downSample = 1;
     }
     ROS_INFO_STREAM("sample:" << samplesStep);
@@ -95,20 +117,25 @@ void LivoxPointsPlugin::Load(gazebo::sensors::SensorPtr _parent, sdf::ElementPtr
     maxDist = rangeElem->Get<double>("max");
     auto offset = laserCollision->RelativePose();
     ignition::math::Vector3d start_point, end_point;
-    for (int j = 0; j < samplesStep; j += downSample) {
+    for (int j = 0; j < samplesStep; j += downSample)
+    {
         int index = j % maxPointSize;
         auto &rotate_info = aviaInfos[index];
         ignition::math::Quaterniond ray;
-        ray.Euler(ignition::math::Vector3d(0.0, rotate_info.zenith, rotate_info.azimuth));
-        auto axis = offset.Rot() * ray * ignition::math::Vector3d(1.0, 0.0, 0.0);
+        ray.Euler(ignition::math::Vector3d(0.0, rotate_info.zenith,
+                                           rotate_info.azimuth));
+        auto axis =
+                offset.Rot() * ray * ignition::math::Vector3d(1.0, 0.0, 0.0);
         start_point = minDist * axis + offset.Pos();
         end_point = maxDist * axis + offset.Pos();
         rayShape->AddRay(start_point, end_point);
     }
 }
 
-void LivoxPointsPlugin::OnNewLaserScans() {
-    if (rayShape) {
+void LivoxPointsPlugin::OnNewLaserScans()
+{
+    if (rayShape)
+    {
         std::vector<std::pair<int, AviaRotateInfo>> points_pair;
         InitializeRays(points_pair, rayShape);
         rayShape->Update();
@@ -117,7 +144,8 @@ void LivoxPointsPlugin::OnNewLaserScans() {
         msgs::LaserScan *scan = laserMsg.mutable_scan();
         InitializeScan(scan);
 
-        SendRosTf(parentEntity->WorldPose(), world->Name(), raySensor->ParentName());
+        SendRosTf(parentEntity->WorldPose(), world->Name(),
+                  raySensor->ParentName());
 
         auto rayCount = RayCount();
         auto verticalRayCount = VerticalRayCount();
@@ -131,7 +159,8 @@ void LivoxPointsPlugin::OnNewLaserScans() {
         scan_point.header.frame_id = raySensor->Name();
         auto &scan_points = scan_point.points;
 
-        for (auto &pair : points_pair) {
+        for (auto &pair: points_pair)
+        {
             //int verticle_index = roundf((pair.second.zenith - verticle_min) / verticle_incre);
             //int horizon_index = roundf((pair.second.azimuth - angle_min) / angle_incre);
             //if (verticle_index < 0 || horizon_index < 0) {
@@ -139,28 +168,32 @@ void LivoxPointsPlugin::OnNewLaserScans() {
             //}
             //if (verticle_index < verticalRayCount && horizon_index < rayCount) {
             //   auto index = (verticalRayCount - verticle_index - 1) * rayCount + horizon_index;
-                auto range = rayShape->GetRange(pair.first);
-                auto intensity = rayShape->GetRetro(pair.first);
-                if (range >= RangeMax()) {
-                    range = 0;
-                } else if (range <= RangeMin()) {
-                    range = 0;
-                }
-                //scan->set_ranges(index, range);
-                //scan->set_intensities(index, intensity);
+            auto range = rayShape->GetRange(pair.first);
+            auto intensity = rayShape->GetRetro(pair.first);
+            if (range >= RangeMax())
+            {
+                range = 0;
+            }
+            else if (range <= RangeMin())
+            {
+                range = 0;
+            }
+            //scan->set_ranges(index, range);
+            //scan->set_intensities(index, intensity);
 
-                auto rotate_info = pair.second;
-                ignition::math::Quaterniond ray;
-                ray.Euler(ignition::math::Vector3d(0.0, rotate_info.zenith, rotate_info.azimuth));
-                //                auto axis = rotate * ray * ignition::math::Vector3d(1.0, 0.0, 0.0);
-                //                auto point = range * axis + world_pose.Pos();//转换成世界坐标系
+            auto rotate_info = pair.second;
+            ignition::math::Quaterniond ray;
+            ray.Euler(ignition::math::Vector3d(0.0, rotate_info.zenith,
+                                               rotate_info.azimuth));
+            //                auto axis = rotate * ray * ignition::math::Vector3d(1.0, 0.0, 0.0);
+            //                auto point = range * axis + world_pose.Pos();//转换成世界坐标系
 
-                auto axis = ray * ignition::math::Vector3d(1.0, 0.0, 0.0);
-                auto point = range * axis;
-                scan_points.emplace_back();
-                scan_points.back().x = point.X();
-                scan_points.back().y = point.Y();
-                scan_points.back().z = point.Z();
+            auto axis = ray * ignition::math::Vector3d(1.0, 0.0, 0.0);
+            auto point = range * axis;
+            scan_points.emplace_back();
+            scan_points.back().x = point.X();
+            scan_points.back().y = point.Y();
+            scan_points.back().z = point.Z();
             //} else {
 
             //    //                ROS_INFO_STREAM("count is wrong:" << verticle_index << "," << verticalRayCount << ","
@@ -169,14 +202,17 @@ void LivoxPointsPlugin::OnNewLaserScans() {
             //    //                          pair.second.azimuth);
             //}
         }
-        if (scanPub && scanPub->HasConnections()) scanPub->Publish(laserMsg);
+        if (scanPub && scanPub->HasConnections())
+            scanPub->Publish(laserMsg);
         rosPointPub.publish(scan_point);
         ros::spinOnce();
     }
 }
 
-void LivoxPointsPlugin::InitializeRays(std::vector<std::pair<int, AviaRotateInfo>> &points_pair,
-                                       boost::shared_ptr<physics::LivoxOdeMultiRayShape> &ray_shape) {
+void LivoxPointsPlugin::InitializeRays(
+        std::vector<std::pair<int, AviaRotateInfo>> &points_pair,
+        boost::shared_ptr<physics::LivoxOdeMultiRayShape> &ray_shape)
+{
     auto &rays = ray_shape->RayShapes();
     ignition::math::Vector3d start_point, end_point;
     ignition::math::Quaterniond ray;
@@ -185,14 +221,18 @@ void LivoxPointsPlugin::InitializeRays(std::vector<std::pair<int, AviaRotateInfo
     int ray_index = 0;
     auto ray_size = rays.size();
     points_pair.reserve(rays.size());
-    for (int k = currStartIndex; k < end_index; k += downSample) {
+    for (int k = currStartIndex; k < end_index; k += downSample)
+    {
         auto index = k % maxPointSize;
         auto &rotate_info = aviaInfos[index];
-        ray.Euler(ignition::math::Vector3d(0.0, rotate_info.zenith, rotate_info.azimuth));
-        auto axis = offset.Rot() * ray * ignition::math::Vector3d(1.0, 0.0, 0.0);
+        ray.Euler(ignition::math::Vector3d(0.0, rotate_info.zenith,
+                                           rotate_info.azimuth));
+        auto axis =
+                offset.Rot() * ray * ignition::math::Vector3d(1.0, 0.0, 0.0);
         start_point = minDist * axis + offset.Pos();
         end_point = maxDist * axis + offset.Pos();
-        if (ray_index < ray_size) {
+        if (ray_index < ray_size)
+        {
             rays[ray_index]->SetPoints(start_point, end_point);
             points_pair.emplace_back(ray_index, rotate_info);
         }
@@ -201,9 +241,11 @@ void LivoxPointsPlugin::InitializeRays(std::vector<std::pair<int, AviaRotateInfo
     currStartIndex += samplesStep;
 }
 
-void LivoxPointsPlugin::InitializeScan(msgs::LaserScan *&scan) {
+void LivoxPointsPlugin::InitializeScan(msgs::LaserScan *&scan)
+{
     // Store the latest laser scans into laserMsg
-    msgs::Set(scan->mutable_world_pose(), raySensor->Pose() + parentEntity->WorldPose());
+    msgs::Set(scan->mutable_world_pose(),
+              raySensor->Pose() + parentEntity->WorldPose());
     scan->set_angle_min(AngleMin().Radian());
     scan->set_angle_max(AngleMax().Radian());
     scan->set_angle_step(AngleResolution());
@@ -223,117 +265,172 @@ void LivoxPointsPlugin::InitializeScan(msgs::LaserScan *&scan) {
     unsigned int rangeCount = RangeCount();
     unsigned int verticalRangeCount = VerticalRangeCount();
 
-    for (unsigned int j = 0; j < verticalRangeCount; ++j) {
-        for (unsigned int i = 0; i < rangeCount; ++i) {
+    for (unsigned int j = 0; j < verticalRangeCount; ++j)
+    {
+        for (unsigned int i = 0; i < rangeCount; ++i)
+        {
             scan->add_ranges(0);
             scan->add_intensities(0);
         }
     }
 }
 
-ignition::math::Angle LivoxPointsPlugin::AngleMin() const {
+ignition::math::Angle LivoxPointsPlugin::AngleMin() const
+{
     if (rayShape)
         return rayShape->MinAngle();
     else
         return -1;
 }
 
-ignition::math::Angle LivoxPointsPlugin::AngleMax() const {
-    if (rayShape) {
+ignition::math::Angle LivoxPointsPlugin::AngleMax() const
+{
+    if (rayShape)
+    {
         return ignition::math::Angle(rayShape->MaxAngle().Radian());
-    } else
+    }
+    else
         return -1;
 }
 
-double LivoxPointsPlugin::GetRangeMin() const { return RangeMin(); }
+double LivoxPointsPlugin::GetRangeMin() const
+{
+    return RangeMin();
+}
 
-double LivoxPointsPlugin::RangeMin() const {
+double LivoxPointsPlugin::RangeMin() const
+{
     if (rayShape)
         return rayShape->GetMinRange();
     else
         return -1;
 }
 
-double LivoxPointsPlugin::GetRangeMax() const { return RangeMax(); }
+double LivoxPointsPlugin::GetRangeMax() const
+{
+    return RangeMax();
+}
 
-double LivoxPointsPlugin::RangeMax() const {
+double LivoxPointsPlugin::RangeMax() const
+{
     if (rayShape)
         return rayShape->GetMaxRange();
     else
         return -1;
 }
 
-double LivoxPointsPlugin::GetAngleResolution() const { return AngleResolution(); }
+double LivoxPointsPlugin::GetAngleResolution() const
+{
+    return AngleResolution();
+}
 
-double LivoxPointsPlugin::AngleResolution() const { return (AngleMax() - AngleMin()).Radian() / (RangeCount() - 1); }
+double LivoxPointsPlugin::AngleResolution() const
+{
+    return (AngleMax() - AngleMin()).Radian() / (RangeCount() - 1);
+}
 
-double LivoxPointsPlugin::GetRangeResolution() const { return RangeResolution(); }
+double LivoxPointsPlugin::GetRangeResolution() const
+{
+    return RangeResolution();
+}
 
-double LivoxPointsPlugin::RangeResolution() const {
+double LivoxPointsPlugin::RangeResolution() const
+{
     if (rayShape)
         return rayShape->GetResRange();
     else
         return -1;
 }
 
-int LivoxPointsPlugin::GetRayCount() const { return RayCount(); }
+int LivoxPointsPlugin::GetRayCount() const
+{
+    return RayCount();
+}
 
-int LivoxPointsPlugin::RayCount() const {
+int LivoxPointsPlugin::RayCount() const
+{
     if (rayShape)
         return rayShape->GetSampleCount();
     else
         return -1;
 }
 
-int LivoxPointsPlugin::GetRangeCount() const { return RangeCount(); }
+int LivoxPointsPlugin::GetRangeCount() const
+{
+    return RangeCount();
+}
 
-int LivoxPointsPlugin::RangeCount() const {
+int LivoxPointsPlugin::RangeCount() const
+{
     if (rayShape)
         return rayShape->GetSampleCount() * rayShape->GetScanResolution();
     else
         return -1;
 }
 
-int LivoxPointsPlugin::GetVerticalRayCount() const { return VerticalRayCount(); }
+int LivoxPointsPlugin::GetVerticalRayCount() const
+{
+    return VerticalRayCount();
+}
 
-int LivoxPointsPlugin::VerticalRayCount() const {
+int LivoxPointsPlugin::VerticalRayCount() const
+{
     if (rayShape)
         return rayShape->GetVerticalSampleCount();
     else
         return -1;
 }
 
-int LivoxPointsPlugin::GetVerticalRangeCount() const { return VerticalRangeCount(); }
+int LivoxPointsPlugin::GetVerticalRangeCount() const
+{
+    return VerticalRangeCount();
+}
 
-int LivoxPointsPlugin::VerticalRangeCount() const {
+int LivoxPointsPlugin::VerticalRangeCount() const
+{
     if (rayShape)
-        return rayShape->GetVerticalSampleCount() * rayShape->GetVerticalScanResolution();
+        return rayShape->GetVerticalSampleCount() *
+               rayShape->GetVerticalScanResolution();
     else
         return -1;
 }
 
-ignition::math::Angle LivoxPointsPlugin::VerticalAngleMin() const {
-    if (rayShape) {
+ignition::math::Angle LivoxPointsPlugin::VerticalAngleMin() const
+{
+    if (rayShape)
+    {
         return ignition::math::Angle(rayShape->VerticalMinAngle().Radian());
-    } else
+    }
+    else
         return -1;
 }
 
-ignition::math::Angle LivoxPointsPlugin::VerticalAngleMax() const {
-    if (rayShape) {
+ignition::math::Angle LivoxPointsPlugin::VerticalAngleMax() const
+{
+    if (rayShape)
+    {
         return ignition::math::Angle(rayShape->VerticalMaxAngle().Radian());
-    } else
+    }
+    else
         return -1;
 }
 
-double LivoxPointsPlugin::GetVerticalAngleResolution() const { return VerticalAngleResolution(); }
-
-double LivoxPointsPlugin::VerticalAngleResolution() const {
-    return (VerticalAngleMax() - VerticalAngleMin()).Radian() / (VerticalRangeCount() - 1);
+double LivoxPointsPlugin::GetVerticalAngleResolution() const
+{
+    return VerticalAngleResolution();
 }
-void LivoxPointsPlugin::SendRosTf(const ignition::math::Pose3d &pose, const std::string &father_frame,
-                                  const std::string &child_frame) {
-    if (!tfBroadcaster) {
+
+double LivoxPointsPlugin::VerticalAngleResolution() const
+{
+    return (VerticalAngleMax() - VerticalAngleMin()).Radian() /
+           (VerticalRangeCount() - 1);
+}
+void LivoxPointsPlugin::SendRosTf(const ignition::math::Pose3d &pose,
+                                  const std::string &father_frame,
+                                  const std::string &child_frame)
+{
+    if (!tfBroadcaster)
+    {
         tfBroadcaster.reset(new tf::TransformBroadcaster);
     }
     tf::Transform tf;
@@ -345,4 +442,4 @@ void LivoxPointsPlugin::SendRosTf(const ignition::math::Pose3d &pose, const std:
     //     tf::StampedTransform(tf, ros::Time::now(), raySensor->ParentName(), raySensor->Name()));
 }
 
-}
+}// namespace gazebo

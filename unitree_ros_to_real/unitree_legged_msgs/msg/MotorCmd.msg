@@ -1,7 +1,7 @@
-uint8 mode           # motor target mode
-float32 q            # motor target position
-float32 dq           # motor target velocity
-float32 tau          # motor target torque
-float32 Kp           # motor spring stiffness coefficient
-float32 Kd           # motor damper coefficient
-uint32[3] reserve    # motor target torque
+uint8 mode           # 电机目标模式
+float32 q            # 电机目标位置 (rad)
+float32 dq           # 电机目标速度 (rad/s)
+float32 tau          # 电机目标力矩 (N*m)
+float32 Kp           # 电机位置刚度系数
+float32 Kd           # 电机阻尼系数
+uint32[3] reserve    # 保留字段

@@ -1,3 +1,3 @@
-uint8 r
-uint8 g
-uint8 b
+uint8 r                      # 红色分量 (0-255)
+uint8 g                      # 绿色分量 (0-255)
+uint8 b                      # 蓝色分量 (0-255)

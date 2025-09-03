@@ -10,27 +10,36 @@
 #include <string>
 #include <vector>
 
-class CsvReader {
- public:
-    static bool ReadCsvFile(std::string file_name, std::vector<std::vector<double>>& datas) {
+class CsvReader
+{
+public:
+    static bool ReadCsvFile(std::string file_name,
+                            std::vector<std::vector<double>> &datas)
+    {
         std::fstream file_stream;
         file_stream.open(file_name, std::ios::in);
-        if (file_stream.is_open()) {
+        if (file_stream.is_open())
+        {
             std::string header;
             std::getline(file_stream, header, '\n');
-            while (!file_stream.eof()) {
+            while (!file_stream.eof())
+            {
                 std::string line_str;
                 std::getline(file_stream, line_str, '\n');
                 std::stringstream line_stream;
                 line_stream << line_str;
                 std::vector<double> data;
-                try {
-                    while (!line_stream.eof()) {
+                try
+                {
+                    while (!line_stream.eof())
+                    {
                         std::string value;
                         std::getline(line_stream, value, ',');
                         data.push_back(std::stod(value));
                     }
-                } catch (...) {
+                }
+                catch (...)
+                {
                     std::cerr << "cannot convert str:" << line_str << "\n";
                     continue;
                 }
@@ -38,11 +47,13 @@ class CsvReader {
             }
             std::cerr << "data size:" << datas.size() << "\n";
             return true;
-        } else {
+        }
+        else
+        {
             std::cerr << "cannot read csv file!" << file_name << "\n";
         }
         return false;
     }
 };
 
-#endif  // SRC_GAZEBO_CSV_READER_HPP
+#endif// SRC_GAZEBO_CSV_READER_HPP
