@@ -30,14 +30,17 @@ else()
   set(ARCH arm64)          # 其他架构（主要是ARM64）使用arm64库
 endif()
 
-# 链接Unitree SDK库目录
-# 根据检测到的架构动态选择对应的库文件路径
-link_directories(${CMAKE_SOURCE_DIR}/unitree_legged_sdk/lib/cpp/${ARCH})
+# 链接Unitree SDK库目录（用于编译期搜索头文件/库）
+# 使用当前包目录作为基准，避免在Catkin下被解析为工作区根目录
+set(UNITREE_SDK_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/unitree_legged_sdk)
+set(UNITREE_SDK_LIB_DIR ${UNITREE_SDK_ROOT}/lib/cpp/${ARCH})
+set(UNITREE_SDK_LIB ${UNITREE_SDK_LIB_DIR}/libunitree_legged_sdk.so)
+link_directories(${UNITREE_SDK_LIB_DIR})
 
 # 设置额外链接库
 # -pthread: 支持多线程操作
-# libunitree_legged_sdk.so: Unitree官方SDK动态库
-set(EXTRA_LIBS -pthread libunitree_legged_sdk.so)
+# 直接使用SDK动态库的绝对路径，避免链接器找不到 -lunitree_legged_sdk
+set(EXTRA_LIBS -pthread ${UNITREE_SDK_LIB})
 
 # 设置编译优化选项
 # -O3: 最高级别优化，提升运行性能
@@ -46,9 +49,9 @@ set(CMAKE_CXX_FLAGS "-O3 -fPIC")
 
 # 设置头文件包含目录
 include_directories(
-    include                                          # 本项目头文件目录
-    ${catkin_INCLUDE_DIRS}                          # catkin相关头文件
-    ${CMAKE_SOURCE_DIR}/unitree_legged_sdk/include  # Unitree SDK头文件
+    include                                   # 本项目头文件目录
+    ${catkin_INCLUDE_DIRS}                   # catkin相关头文件
+    ${UNITREE_SDK_ROOT}/include              # Unitree SDK头文件
 )
 
 # =============================================================================

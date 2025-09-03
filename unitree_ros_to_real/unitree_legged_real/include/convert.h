@@ -20,7 +20,7 @@ Use of this source code is governed by the MPL-2.0 license, see LICENSE.
 #include "unitree_legged_msgs/MotorState.h"   // 电机状态反馈
 
 // Unitree SDK头文件
-#include "unitree_legged_sdk/unitree_legged_sdk.h"
+#include "../unitree_legged_sdk/include/unitree_legged_sdk.h"
 #include "ros/ros.h"
 
 // =============================================================================

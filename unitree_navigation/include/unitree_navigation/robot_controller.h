@@ -13,7 +13,7 @@
 #include <ros/ros.h>
 
 // 引入Unitree SDK头文件
-#include "/home/moyuan/catkin_ws/src/unitree_ros/unitree_ros_to_real/unitree_legged_real/unitree_legged_sdk/include/unitree_legged_sdk/unitree_legged_sdk.h"
+#include "/home/yangnan/unitree_go2_catkin_ws/src/unitree_simulation/unitree_ros_to_real/unitree_legged_real/unitree_legged_sdk/include/unitree_legged_sdk/unitree_legged_sdk.h"
 
 /**
  * @brief 机器人控制器类，用于接收ROS速度命令并控制Unitree四足机器人

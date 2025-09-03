@@ -22,7 +22,7 @@
 #include <ros/ros.h>
 #include <unitree_legged_msgs/HighCmd.h>     // 高层控制命令消息
 #include <unitree_legged_msgs/HighState.h>   // 高层状态反馈消息
-#include "unitree_legged_sdk/unitree_legged_sdk.h"  // Unitree SDK
+#include "../unitree_legged_sdk/include/unitree_legged_sdk.h"  // Unitree SDK
 #include "convert.h"                         // ROS消息与SDK数据转换函数
 
 using namespace UNITREE_LEGGED_SDK;

@@ -1,61 +1,105 @@
 <launch>
+    <!-- ============== 基本参数配置 ============== -->
+    <!-- 世界文件名称，默认为earth.world -->
     <arg name="wname" default="earth"/>
+    <!-- 机器人名称，默认为go2 -->
     <arg name="rname" default="go2"/>
+    <!-- 机器人描述文件路径，动态根据机器人名称构建 -->
     <arg name="robot_path" value="(find $(arg rname)_description)"/>
+    <!-- 美元符号变量，用于在xacro中引用 -->
     <arg name="dollar" value="$"/>
 
+    <!-- ============== Gazebo仿真参数 ============== -->
+    <!-- 仿真启动时是否暂停 -->
     <arg name="paused" default="true"/>
+    <!-- 是否使用仿真时间（重要：确保时间同步） -->
     <arg name="use_sim_time" default="true"/>
+    <!-- 是否显示Gazebo图形界面 -->
     <arg name="gui" default="true"/>
+    <!-- 是否以无头模式运行（服务器模式） -->
     <arg name="headless" default="false"/>
+    <!-- 调试模式开关 -->
     <arg name="debug" default="false"/>
+    <!-- 用户自定义调试模式，会挂起机器人，谨慎使用 -->
     <!-- Debug mode will hung up the robot, use "true" or "false" to switch it. -->
     <arg name="user_debug" default="false"/>
     
+    <!-- ============== 启动Gazebo空白世界 ============== -->
+    <!-- 加载gazebo_ros包的empty_world.launch文件 -->
     <include file="$(find gazebo_ros)/launch/empty_world.launch">
+        <!-- 指定要加载的世界文件路径 -->
         <arg name="world_name" value="$(find unitree_gazebo)/worlds/$(arg wname).world"/>
+        <!-- 传递调试参数 -->
         <arg name="debug" value="$(arg debug)"/>
+        <!-- 传递GUI显示参数 -->
         <arg name="gui" value="$(arg gui)"/>
+        <!-- 传递暂停参数 -->
         <arg name="paused" value="$(arg paused)"/>
+        <!-- 传递仿真时间使用参数 -->
         <arg name="use_sim_time" value="$(arg use_sim_time)"/>
+        <!-- 传递无头模式参数 -->
         <arg name="headless" value="$(arg headless)"/>
     </include>
 
-    <!-- Load the URDF into the ROS Parameter Server -->
+    <!-- ============== 加载机器人描述到ROS参数服务器 ============== -->
+    <!-- 使用xacro工具解析URDF/XACRO文件，生成机器人描述 -->
     <param name="robot_description"
            command="$(find xacro)/xacro --inorder '$(arg dollar)$(arg robot_path)/xacro/robot.xacro' 
            DEBUG:=$(arg user_debug)"/>
 
-    <!-- Run a python script to the send a service call to gazebo_ros to spawn a URDF robot -->
-    <!-- Set trunk and joint positions at startup -->
+    <!-- ============== 在Gazebo中生成机器人模型 ============== -->
+    <!-- 运行Python脚本，调用gazebo_ros服务在仿真中生成URDF机器人 -->
+    <!-- 设置躯干和关节的初始位置 -->
     <node pkg="gazebo_ros" type="spawn_model" name="urdf_spawner" respawn="false" output="screen"
           args="-urdf -z 0.6 -model $(arg rname)_gazebo -param robot_description -unpause"/>
+          <!-- 参数解释：
+               -urdf: 指定使用URDF格式
+               -z 0.6: 机器人生成时离地高度为0.6米
+               -model: 在Gazebo中的模型名称
+               -param: 从参数服务器读取机器人描述
+               -unpause: 生成后自动取消暂停 -->
 
-    <!-- Load joint controller configurations from YAML file to parameter server -->
+    <!-- ============== 加载关节控制器配置 ============== -->
+    <!-- 从YAML文件加载关节控制器配置到参数服务器 -->
     <rosparam file="$(arg dollar)$(arg robot_path)/config/robot_control.yaml" command="load"/>
 
-    <!-- load the controllers -->
+    <!-- ============== 启动控制器管理器 ============== -->
+    <!-- 加载并启动所有关节控制器 -->
     <node pkg="controller_manager" type="spawner" name="controller_spawner" respawn="false"
           output="screen" ns="/$(arg rname)_gazebo" args="joint_state_controller
           FL_hip_controller FL_thigh_controller FL_calf_controller
           FR_hip_controller FR_thigh_controller FR_calf_controller
           RL_hip_controller RL_thigh_controller RL_calf_controller
           RR_hip_controller RR_thigh_controller RR_calf_controller "/>
+          <!-- 控制器说明：
+               joint_state_controller: 关节状态发布器
+               FL_xxx: 左前腿控制器（Front Left - hip髋关节, thigh大腿, calf小腿）
+               FR_xxx: 右前腿控制器（Front Right）
+               RL_xxx: 左后腿控制器（Rear Left）  
+               RR_xxx: 右后腿控制器（Rear Right） -->
 
-    <!-- convert joint states to TF transforms for rviz, etc -->
+    <!-- ============== 机器人状态发布器 ============== -->
+    <!-- 将关节状态转换为TF变换，供rviz等工具使用 -->
     <node pkg="robot_state_publisher" type="robot_state_publisher" name="robot_state_publisher"
           respawn="false" output="screen">
+        <!-- 重映射关节状态话题到机器人特定的命名空间 -->
         <remap from="/joint_states" to="/$(arg rname)_gazebo/joint_states"/>
     </node>
 
+    <!-- ============== 伺服控制节点（已注释） ============== -->
+    <!-- 原本的伺服控制节点，现已被其他控制系统替代 -->
     <!-- <node pkg="unitree_gazebo" type="servo" name="servo" required="true" output="screen"/> -->
 
-    <!-- load the parameter unitree_controller -->
+    <!-- ============== 加载Unitree控制器参数 ============== -->
+    <!-- 包含unitree_controller的配置文件 -->
     <include file="$(find unitree_controller)/launch/set_ctrl.launch">
         <arg name="rname" value="$(arg rname)"/>
     </include>
-    <!-- RViz -->
-   <arg name="rviz" default="true"/>
-   <node name="rviz" pkg="rviz" type="rviz" args="-d $(find livox_laser_simulation)/rviz/livox_simulation.rviz"/>
+    
+    <!-- ============== RViz可视化 ============== -->
+    <!-- RViz可视化参数，默认启用 -->
+    <arg name="rviz" default="true"/>
+    <!-- 启动RViz节点，使用Livox激光雷达仿真的配置文件 -->
+    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find livox_laser_simulation)/rviz/livox_simulation.rviz"/>
 
 </launch>

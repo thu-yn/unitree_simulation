@@ -1,75 +1,250 @@
 /**********************************************************************
- Copyright (c) 2020-2023, Unitree Robotics.Co.Ltd. All rights reserved.
+Copyright (c) 2020-2023, Unitree Robotics.Co.Ltd. All rights reserved.
 ***********************************************************************/
+
+/**
+* @file Estimator.cpp
+* @brief 四足机器人状态估计器实现
+* 
+* 文件作用：
+* 该文件实现了Estimator类，是四足机器人控制系统中的核心感知模块。
+* 状态估计器负责融合多个传感器的数据，实时估计机器人的完整状态信息。
+* 
+* 主要功能：
+* 1. 🧭 多传感器融合 - 结合IMU、编码器、步态信息进行状态估计
+* 2. 📍 位置与速度估计 - 实时估计机器人在世界坐标系中的位置和速度  
+* 3. 🦶 足端状态追踪 - 估计四条腿足端在空间中的位置和速度
+* 4. 🔍 卡尔曼滤波 - 采用扩展卡尔曼滤波算法处理噪声和不确定性
+* 5. 📡 里程计发布 - 为ROS导航栈提供odometry信息（可选）
+* 
+* 在整个控制系统中的作用：
+* Estimator是控制系统的"感知大脑"，为其他控制模块提供准确的状态信息：
+* 
+* 数据流向：
+* 传感器数据 → Estimator → 其他控制模块
+* ├─ IMU数据        ↓         ├─ BalanceCtrl (平衡控制)  
+* ├─ 编码器数据   状态融合     ├─ FSMState (状态机)
+* ├─ 步态信息        ↓         ├─ 足端轨迹规划
+* └─ 运动学模型   估计结果     └─ ROS导航栈
+* 
+* 核心算法原理：
+* 基于扩展卡尔曼滤波(EKF)的状态估计，状态向量包含18个状态：
+* - 机体位置 (3维): [x, y, z] 世界坐标系中的位置
+* - 机体速度 (3维): [vx, vy, vz] 世界坐标系中的速度  
+* - 足端位置 (12维): 4条腿×3维坐标，世界坐标系中的足端位置
+* 
+* 观测向量包含28个观测：
+* - 足端相对位置 (12维): 四条腿相对机体的位置
+* - 机体相对速度 (12维): 基于足端接触的相对速度估计
+* - 足端高度 (4维): 四条腿的Z坐标（地面接触信息）
+* 
+* 技术特点：
+* - 🎯 实时性：每个控制周期(500Hz)更新一次
+* - 🔧 自适应：根据足端接触状态调整噪声模型  
+* - 🌐 全局估计：提供世界坐标系下的绝对位置信息
+* - 📊 统计分析：内置数据统计和调试功能
+*/
+
 #include "control/Estimator.h"
 #include "common/mathTools.h"
 #include "common/enumClass.h"
 
+/**
+* @brief 状态估计器构造函数（测试版本，带自定义参数）
+* @param robotModel 机器人运动学/动力学模型指针
+* @param lowState 底层状态信息指针（传感器数据来源）
+* @param contact 足端接触状态指针（4维布尔向量）
+* @param phase 步态相位指针（4维浮点向量）
+* @param dt 控制周期，通常为0.002s（500Hz）
+* @param Qdig 过程噪声对角线元素（18维向量）
+* @param testName 测试名称，用于数据记录和调试
+* 
+* 该构造函数用于测试和调试，允许手动指定过程噪声参数和测试名称。
+* 在研究和开发阶段使用，可以方便地调整滤波器参数和记录数据。
+*/
 Estimator::Estimator(QuadrupedRobot *robotModel, LowlevelState* lowState, 
-                     VecInt4 *contact, Vec4 *phase, double dt, Vec18 Qdig,
-                     std::string testName)
-          :_robModel(robotModel), _lowState(lowState), _contact(contact),
-           _phase(phase), _dt(dt), _Qdig(Qdig), _estName(testName){
+                    VecInt4 *contact, Vec4 *phase, double dt, Vec18 Qdig,
+                    std::string testName)
+        :_robModel(robotModel), _lowState(lowState), _contact(contact),
+        _phase(phase), _dt(dt), _Qdig(Qdig), _estName(testName){
 
+    // 调用系统初始化函数，设置卡尔曼滤波器的所有矩阵和参数
     _initSystem();
 }
 
+/**
+* @brief 状态估计器构造函数（标准版本，使用默认参数）
+* @param robotModel 机器人运动学/动力学模型指针
+* @param lowState 底层状态信息指针
+* @param contact 足端接触状态指针  
+* @param phase 步态相位指针
+* @param dt 控制周期
+* 
+* 该构造函数用于正常运行，使用经过调优的默认参数。
+* 过程噪声参数基于实际机器人的特性进行了优化。
+*/
 Estimator::Estimator(QuadrupedRobot *robotModel, LowlevelState* lowState, 
-                     VecInt4 *contact, Vec4 *phase, double dt)
-          :_robModel(robotModel), _lowState(lowState), _contact(contact), 
-           _phase(phase), _dt(dt){
+                    VecInt4 *contact, Vec4 *phase, double dt)
+        :_robModel(robotModel), _lowState(lowState), _contact(contact), 
+        _phase(phase), _dt(dt){
 
+    /**
+    * 设置默认的过程噪声协方差矩阵对角线元素
+    * 
+    * 过程噪声反映了系统模型的不确定性：
+    * - 位置不确定性（前3个元素）：较小值，因为位置变化相对平稳
+    * - 速度不确定性（中间3个元素）：较小值，速度变化也相对连续
+    * - 足端位置不确定性（后12个元素）：较大值，因为足端在步态过程中变化较大
+    */
     for(int i(0); i<_Qdig.rows(); ++i){
         if(i < 3){
+            // 机体位置的过程噪声：0.0003，表示位置估计的不确定性较小
             _Qdig(i) = 0.0003;
         }
         else if(i < 6){
+            // 机体速度的过程噪声：0.0003，表示速度估计的连续性较好
             _Qdig(i) = 0.0003;
         }
         else{
+            // 足端位置的过程噪声：0.01，表示足端位置在步态中变化较大
             _Qdig(i) = 0.01;
         }
     }
 
+    // 设置默认的估计器名称，用于数据记录和调试输出
     _estName = "current";
 
+    // 调用系统初始化函数
     _initSystem();
-
 }
 
+/**
+* @brief 析构函数
+* 清理动态分配的资源，特别是统计分析对象和滤波器对象
+*/
 Estimator::~Estimator(){
+    // 注意：这里应该有清理代码，但原始实现中为空
+    // 在实际使用中可能需要添加：
+    // delete _RCheck;
+    // delete _uCheck; 
+    // delete _vxFilter;
+    // delete _vyFilter;
+    // delete _vzFilter;
 }
 
+/**
+* @brief 初始化卡尔曼滤波系统
+* 
+* 该函数设置扩展卡尔曼滤波器的所有矩阵和参数，是状态估计器的核心初始化函数。
+* 包括状态转移矩阵A、控制输入矩阵B、观测矩阵C、噪声协方差矩阵Q和R等。
+*/
 void Estimator::_initSystem(){
+    // 设置重力向量，用于IMU数据的重力补偿
     _g << 0, 0, -9.81;
+    
+    // 设置大方差值，用于初始化协方差矩阵（表示初始状态的高度不确定性）
     _largeVariance = 100;
 
-    _xhat.setZero();
+    // ==================== 状态向量初始化 ====================
+    /**
+    * 初始化状态向量 _xhat [18×1]：
+    * _xhat = [px, py, pz,           <- 机体位置 (世界坐标系)
+    *          vx, vy, vz,           <- 机体速度 (世界坐标系)  
+    *          fx1,fy1,fz1,          <- 第1条腿足端位置 (世界坐标系)
+    *          fx2,fy2,fz2,          <- 第2条腿足端位置
+    *          fx3,fy3,fz3,          <- 第3条腿足端位置
+    *          fx4,fy4,fz4]          <- 第4条腿足端位置
+    */
+    _xhat.setZero();  // 初始状态设为零向量
+    
+    // 初始化控制输入向量（IMU加速度）
     _u.setZero();
+
+    // ==================== 状态转移矩阵 A [18×18] ====================
+    /**
+    * 离散时间状态转移矩阵，描述状态如何随时间演变：
+    * x(k+1) = A*x(k) + B*u(k) + w(k)
+    * 
+    * 矩阵结构（分块表示）：
+    * A = [I3   I3*dt   0     ]  <- 位置 = 位置 + 速度*dt
+    *     [0    I3      0     ]  <- 速度 = 速度 + 加速度*dt（通过B矩阵）
+    *     [0    0       I12   ]  <- 足端位置 = 足端位置（假设静态接触）
+    */
     _A.setZero();
-    _A.block(0, 0, 3, 3) = I3;
-    _A.block(0, 3, 3, 3) = I3 * _dt;
-    _A.block(3, 3, 3, 3) = I3;
-    _A.block(6, 6, 12, 12) = I12;
+    _A.block(0, 0, 3, 3) = I3;           // 位置对位置的导数：单位矩阵
+    _A.block(0, 3, 3, 3) = I3 * _dt;     // 位置对速度的导数：积分关系
+    _A.block(3, 3, 3, 3) = I3;           // 速度对速度的导数：单位矩阵  
+    _A.block(6, 6, 12, 12) = I12;        // 足端位置对自身的导数：单位矩阵
+
+    // ==================== 控制输入矩阵 B [18×3] ====================
+    /**
+    * 控制输入矩阵，描述控制输入（IMU加速度）如何影响状态：
+    * 只有机体速度直接受到加速度的影响
+    */
     _B.setZero();
-    _B.block(3, 0, 3, 3) = I3 * _dt;
+    _B.block(3, 0, 3, 3) = I3 * _dt;     // 速度 += 加速度 * dt
+
+    // ==================== 观测矩阵 C [28×18] ====================
+    /**
+    * 观测矩阵，描述如何从状态向量计算预期的观测值：
+    * y = C*x + v，其中y是观测向量，v是观测噪声
+    * 
+    * 观测向量结构 [28×1]：
+    * y = [foot1_rel_pos,      <- 足端1相对机体的位置 [3×1]
+    *      foot2_rel_pos,      <- 足端2相对机体的位置 [3×1] 
+    *      foot3_rel_pos,      <- 足端3相对机体的位置 [3×1]
+    *      foot4_rel_pos,      <- 足端4相对机体的位置 [3×1]
+    *      body_rel_vel1,      <- 基于足端1的机体相对速度 [3×1]
+    *      body_rel_vel2,      <- 基于足端2的机体相对速度 [3×1]
+    *      body_rel_vel3,      <- 基于足端3的机体相对速度 [3×1]
+    *      body_rel_vel4,      <- 基于足端4的机体相对速度 [3×1]
+    *      foot1_height,       <- 足端1的Z坐标 [1×1]
+    *      foot2_height,       <- 足端2的Z坐标 [1×1]
+    *      foot3_height,       <- 足端3的Z坐标 [1×1]
+    *      foot4_height]       <- 足端4的Z坐标 [1×1]
+    * 
+    * 矩阵C的构建逻辑：
+    * - 足端相对位置 = 足端绝对位置 - 机体位置
+    * - 机体相对速度 = 机体速度（当足端静止接触地面时）
+    * - 足端高度 = 足端Z坐标
+    */
     _C.setZero();
-    _C.block(0, 0, 3, 3) = -I3;
-    _C.block(3, 0, 3, 3) = -I3;
-    _C.block(6, 0, 3, 3) = -I3;
-    _C.block(9, 0, 3, 3) = -I3;
-    _C.block(12, 3, 3, 3) = -I3;
-    _C.block(15, 3, 3, 3) = -I3;
-    _C.block(18, 3, 3, 3) = -I3;
-    _C.block(21, 3, 3, 3) = -I3;
-    _C.block(0, 6, 12, 12) = I12;
-    _C(24, 8) = 1;
-    _C(25, 11) = 1;
-    _C(26, 14) = 1;
-    _C(27, 17) = 1;
+    // 足端相对位置观测（前12行）：足端位置 - 机体位置
+    _C.block(0, 0, 3, 3) = -I3;          // 足端1相对位置对机体位置的系数
+    _C.block(3, 0, 3, 3) = -I3;          // 足端2相对位置对机体位置的系数
+    _C.block(6, 0, 3, 3) = -I3;          // 足端3相对位置对机体位置的系数
+    _C.block(9, 0, 3, 3) = -I3;          // 足端4相对位置对机体位置的系数
+    
+    // 机体相对速度观测（中间12行）：基于静态足端假设的速度观测
+    _C.block(12, 3, 3, 3) = -I3;         // 基于足端1的速度观测
+    _C.block(15, 3, 3, 3) = -I3;         // 基于足端2的速度观测  
+    _C.block(18, 3, 3, 3) = -I3;         // 基于足端3的速度观测
+    _C.block(21, 3, 3, 3) = -I3;         // 基于足端4的速度观测
+    
+    // 足端相对位置和足端位置的正系数（12×12块）
+    _C.block(0, 6, 12, 12) = I12;        // 足端相对位置对足端绝对位置的系数
+    
+    // 足端高度观测（最后4行）：仅观测Z坐标
+    _C(24, 8) = 1;                       // 足端1的Z坐标（状态向量第8个元素）
+    _C(25, 11) = 1;                      // 足端2的Z坐标（状态向量第11个元素）
+    _C(26, 14) = 1;                      // 足端3的Z坐标（状态向量第14个元素）  
+    _C(27, 17) = 1;                      // 足端4的Z坐标（状态向量第17个元素）
+
+    // ==================== 初始协方差矩阵 P [18×18] ====================
+    /**
+    * 初始状态协方差矩阵，表示初始状态估计的不确定性
+    * 使用大方差值初始化，表示初始时对状态的不确定性很高
+    */
     _P.setIdentity();
     _P = _largeVariance * _P;
 
+    // ==================== 观测噪声协方差矩阵 R [28×28] ====================
+    /**
+    * 观测噪声协方差矩阵，基于实际机器人数据统计得出
+    * 该矩阵反映了各种传感器和估计方法的噪声特性
+    * 
+    * 注意：这是一个经验矩阵，数值是通过大量实验数据统计得出的
+    */
     _RInit <<  0.008 , 0.012 ,-0.000 ,-0.009 , 0.012 , 0.000 , 0.009 ,-0.009 ,-0.000 ,-0.009 ,-0.009 , 0.000 ,-0.000 , 0.000 ,-0.000 , 0.000 ,-0.000 ,-0.001 ,-0.002 , 0.000 ,-0.000 ,-0.003 ,-0.000 ,-0.001 , 0.000 , 0.000 , 0.000 , 0.000,
                0.012 , 0.019 ,-0.001 ,-0.014 , 0.018 ,-0.000 , 0.014 ,-0.013 ,-0.000 ,-0.014 ,-0.014 , 0.001 ,-0.001 , 0.001 ,-0.001 , 0.000 , 0.000 ,-0.001 ,-0.003 , 0.000 ,-0.001 ,-0.004 ,-0.000 ,-0.001 , 0.000 , 0.000 , 0.000 , 0.000,
                -0.000, -0.001,  0.001,  0.001, -0.001,  0.000, -0.000,  0.000, -0.000,  0.001,  0.000, -0.000,  0.000, -0.000,  0.000,  0.000, -0.000, -0.000,  0.000, -0.000, -0.000, -0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,
@@ -99,118 +274,234 @@ void Estimator::_initSystem(){
                0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 1.0 , 0.000,
                0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 0.000 , 1.0;
 
-    /* A1 Worked */
+    // ==================== 控制输入噪声协方差矩阵 Cu [3×3] ====================
+    /**
+    * 控制输入（IMU加速度）的噪声协方差矩阵
+    * 该矩阵反映了IMU加速度计的噪声特性，基于A1机器人的实测数据
+    */
     _Cu <<   268.573,  -43.819, -147.211,
             -43.819 ,  92.949 ,  58.082,
             -147.211,   58.082,  302.120;
 
+    // ==================== 过程噪声协方差矩阵 Q [18×18] ====================
+    /**
+    * 构建完整的过程噪声协方差矩阵
+    * Q = Qdig + B*Cu*B^T
+    * 其中Qdig是对角元素，B*Cu*B^T是控制输入噪声的贡献
+    */
     _QInit = _Qdig.asDiagonal();
     _QInit +=  _B * _Cu * _B.transpose();
 
-    _RCheck  = new AvgCov(28, _estName + " R");
-    _uCheck  = new AvgCov(3,  _estName + " u");
+    // ==================== 统计分析工具初始化 ====================
+    /**
+    * 创建统计分析对象，用于在线监测噪声特性和系统性能
+    * 这些工具在调试和系统优化中非常有用
+    */
+    _RCheck  = new AvgCov(28, _estName + " R");  // 观测噪声统计分析
+    _uCheck  = new AvgCov(3,  _estName + " u");  // 控制输入统计分析
 
-    _vxFilter = new LPFilter(_dt, 3.0);
-    _vyFilter = new LPFilter(_dt, 3.0);
-    _vzFilter = new LPFilter(_dt, 3.0);
+    // ==================== 低通滤波器初始化 ====================
+    /**
+    * 创建速度分量的低通滤波器，用于平滑速度估计
+    * 截止频率为3.0Hz，可以有效滤除高频噪声
+    */
+    _vxFilter = new LPFilter(_dt, 3.0);  // X方向速度滤波器
+    _vyFilter = new LPFilter(_dt, 3.0);  // Y方向速度滤波器
+    _vzFilter = new LPFilter(_dt, 3.0);  // Z方向速度滤波器
 
-
-    /* ROS odometry publisher */
+    // ==================== ROS里程计发布器初始化 ====================
     #ifdef COMPILE_WITH_MOVE_BASE
+        /**
+        * 如果启用了move_base功能，创建里程计话题发布器
+        * 用于向ROS导航栈提供机器人的位置和速度信息
+        */
         _pub = _nh.advertise<nav_msgs::Odometry>("odom", 1);
     #endif  // COMPILE_WITH_MOVE_BASE
 }
 
+ /**
+ * Estimator.cpp - 四足机器人状态估计器实现
+ * 
+ * 功能描述：
+ * 基于扩展卡尔曼滤波(EKF)实现机器人状态估计，融合IMU、足端位置等传感器信息
+ * 估计机器人的位置、速度以及四个足端的位置
+ * 
+ * 状态向量 (18维):
+ * - 位置 (3维): [x, y, z] - 机器人在全局坐标系下的位置
+ * - 速度 (3维): [vx, vy, vz] - 机器人在全局坐标系下的速度  
+ * - 足端位置 (12维): [foot0_x, foot0_y, foot0_z, ..., foot3_x, foot3_y, foot3_z] - 四个足端的全局位置
+ */
+
 void Estimator::run(){
+    // ====================== 1. 初始化和数据准备 ======================
+    
+    // 初始化足端高度信息（假设所有足端都在地面）
     _feetH.setZero();
+    
+    // 通过运动学计算获取足端相对于机器人本体的位置（全局坐标系）
     _feetPosGlobalKine = _robModel->getFeet2BPositions(*_lowState, FrameType::GLOBAL);
+    
+    // 通过运动学计算获取足端相对于机器人本体的速度（全局坐标系）  
     _feetVelGlobalKine = _robModel->getFeet2BVelocities(*_lowState, FrameType::GLOBAL);
 
+    // 重置过程噪声协方差矩阵Q和观测噪声协方差矩阵R为初始值
     _Q = _QInit;
     _R = _RInit;
 
+    // ====================== 2. 根据足端接触状态调整滤波参数 ======================
+    
     for(int i(0); i < 4; ++i){
+        // 检查第i个足端的接触状态
         if((*_contact)(i) == 0){
+            // 足端离地（摆动相）：增大不确定性
+            
+            // 对应足端位置的过程噪声增大（状态向量中6+3*i到6+3*i+2的位置对应第i个足端）
             _Q.block(6+3*i, 6+3*i, 3, 3) = _largeVariance * I3;
+            
+            // 对应足端位置观测的观测噪声增大（观测向量中12+3*i到12+3*i+2的位置）
             _R.block(12+3*i, 12+3*i, 3, 3) = _largeVariance * I3;
+            
+            // 对应足端高度约束的观测噪声增大（观测向量中24+i的位置）
             _R(24+i, 24+i) = _largeVariance;
         }
         else{
+            // 足端着地（支撑相）：根据相位调整信任度
+            
+            // 计算信任度：相位接近0时信任度高，相位接近1时信任度低
+            // windowFunc是一个窗口函数，0.2是窗口宽度参数
             _trust = windowFunc((*_phase)(i), 0.2);
+            
+            // 根据信任度动态调整过程噪声：信任度高时噪声小，信任度低时噪声大
             _Q.block(6+3*i, 6+3*i, 3, 3) = (1 + (1-_trust)*_largeVariance) * _QInit.block(6+3*i, 6+3*i, 3, 3);
+            
+            // 根据信任度动态调整观测噪声  
             _R.block(12+3*i, 12+3*i, 3, 3) = (1 + (1-_trust)*_largeVariance) * _RInit.block(12+3*i, 12+3*i, 3, 3);
             _R(24+i, 24+i) = (1 + (1-_trust)*_largeVariance) * _RInit(24+i, 24+i);
         }
+        
+        // 将运动学计算的足端位置和速度存储到向量中
+        // 注意：这里是足端相对于机器人本体的位置，但在全局坐标系下表示
         _feetPos2Body.segment(3*i, 3) = _feetPosGlobalKine.col(i);
         _feetVel2Body.segment(3*i, 3) = _feetVelGlobalKine.col(i);
     }
 
+    // ====================== 3. 卡尔曼滤波预测步骤 ======================
+    
+    // 获取机器人本体到全局坐标系的旋转矩阵
     _rotMatB2G = _lowState->getRotMat();
+    
+    // 计算控制输入：将机器人本体坐标系下的加速度转换到全局坐标系，并加上重力补偿
     _u = _rotMatB2G * _lowState->getAcc() + _g;
+    
+    // 状态预测：x_k|k-1 = A * x_k-1|k-1 + B * u_k
     _xhat = _A * _xhat + _B * _u;
+    
+    // 输出预测：y_k|k-1 = C * x_k|k-1  
     _yhat = _C * _xhat;
+    
+    // 组装观测向量：[足端位置(12维), 足端速度(12维), 足端高度(4维)]
     _y << _feetPos2Body, _feetVel2Body, _feetH;
 
+    // ====================== 4. 卡尔曼滤波更新步骤 ======================
+    
+    // 计算预测协方差矩阵：P_k|k-1 = A * P_k-1|k-1 * A^T + Q
     _Ppriori = _A * _P * _A.transpose() + _Q;
+    
+    // 计算新息协方差矩阵：S = R + C * P_k|k-1 * C^T
     _S =  _R + _C * _Ppriori * _C.transpose();
+    
+    // 对新息协方差矩阵进行LU分解，用于高效求解线性方程组
     _Slu = _S.lu();
-    _Sy = _Slu.solve(_y - _yhat);
-    _Sc = _Slu.solve(_C);
-    _SR = _Slu.solve(_R);
-    _STC = (_S.transpose()).lu().solve(_C);
+    
+    // 计算各种中间变量，避免重复矩阵求逆运算：
+    _Sy = _Slu.solve(_y - _yhat);        // S^-1 * (y - y_hat)，加权新息
+    _Sc = _Slu.solve(_C);                // S^-1 * C
+    _SR = _Slu.solve(_R);                // S^-1 * R  
+    _STC = (_S.transpose()).lu().solve(_C);  // (S^T)^-1 * C
+    
+    // 计算更新后的状态协方差需要的中间项：I - P_k|k-1 * C^T * S^-1 * C
     _IKC = I18 - _Ppriori*_C.transpose()*_Sc;
 
+    // ====================== 5. 状态和协方差更新 ======================
+    
+    // 状态更新：x_k|k = x_k|k-1 + K * (y - y_hat)
+    // 其中卡尔曼增益 K = P_k|k-1 * C^T * S^-1
     _xhat += _Ppriori * _C.transpose() * _Sy;
+    
+    // 协方差更新：使用Joseph形式保证数值稳定性
+    // P_k|k = (I - K*C) * P_k|k-1 * (I - K*C)^T + K * R * K^T
     _P =  _IKC * _Ppriori * _IKC.transpose()
         + _Ppriori * _C.transpose() * _SR * _STC * _Ppriori.transpose();
 
-    _vxFilter->addValue(_xhat(3));
-    _vyFilter->addValue(_xhat(4));
-    _vzFilter->addValue(_xhat(5));
+    // ====================== 6. 速度滤波后处理 ======================
+    
+    // 对估计的速度进行低通滤波，减少噪声
+    _vxFilter->addValue(_xhat(3));  // x方向速度滤波
+    _vyFilter->addValue(_xhat(4));  // y方向速度滤波  
+    _vzFilter->addValue(_xhat(5));  // z方向速度滤波
 
+    // ====================== 7. ROS里程计发布（可选编译） ======================
+    
     #ifdef COMPILE_WITH_MOVE_BASE
+        // 按设定频率发布里程计信息
         if(_count % ((int)( 1.0/(_dt*_pubFreq))) == 0){
             _currentTime = ros::Time::now();
-            /* tf */
+            
+            /* === TF变换发布 === */
             _odomTF.header.stamp = _currentTime;
-            _odomTF.header.frame_id = "odom";
-            _odomTF.child_frame_id  = "base";
+            _odomTF.header.frame_id = "odom";        // 里程计坐标系
+            _odomTF.child_frame_id  = "base";        // 机器人基座坐标系
 
+            // 设置位置信息（从状态估计结果获取）
             _odomTF.transform.translation.x = _xhat(0);
             _odomTF.transform.translation.y = _xhat(1);
             _odomTF.transform.translation.z = _xhat(2);
+            
+            // 设置姿态信息（从IMU获取四元数）
             _odomTF.transform.rotation.w = _lowState->imu.quaternion[0];
             _odomTF.transform.rotation.x = _lowState->imu.quaternion[1];
             _odomTF.transform.rotation.y = _lowState->imu.quaternion[2];
             _odomTF.transform.rotation.z = _lowState->imu.quaternion[3];
 
+            // 发布TF变换
             _odomBroadcaster.sendTransform(_odomTF);
 
-            /* odometry */
+            /* === 里程计消息发布 === */
             _odomMsg.header.stamp = _currentTime;
             _odomMsg.header.frame_id = "odom";
 
+            // 设置位置信息
             _odomMsg.pose.pose.position.x = _xhat(0);
             _odomMsg.pose.pose.position.y = _xhat(1);
             _odomMsg.pose.pose.position.z = _xhat(2);
 
+            // 设置姿态信息  
             _odomMsg.pose.pose.orientation.w = _lowState->imu.quaternion[0];
             _odomMsg.pose.pose.orientation.x = _lowState->imu.quaternion[1];
             _odomMsg.pose.pose.orientation.y = _lowState->imu.quaternion[2];
             _odomMsg.pose.pose.orientation.z = _lowState->imu.quaternion[3];
+            
+            // 设置位置协方差
             _odomMsg.pose.covariance = _odom_pose_covariance;
 
+            // 设置速度信息
             _odomMsg.child_frame_id = "base";
+            
+            // 将全局坐标系下的速度转换到机器人本体坐标系
             _velBody = _rotMatB2G.transpose() * _xhat.segment(3, 3);
-            _wBody   = _lowState->imu.getGyro();
-            _odomMsg.twist.twist.linear.x = _velBody(0);
-            _odomMsg.twist.twist.linear.y = _velBody(1);
-            _odomMsg.twist.twist.linear.z = _velBody(2);
-            _odomMsg.twist.twist.angular.x = _wBody(0);
-            _odomMsg.twist.twist.angular.y = _wBody(1);
-            _odomMsg.twist.twist.angular.z = _wBody(2);
+            _wBody   = _lowState->imu.getGyro();  // 获取角速度
+            
+            _odomMsg.twist.twist.linear.x = _velBody(0);   // 本体坐标系x方向线速度
+            _odomMsg.twist.twist.linear.y = _velBody(1);   // 本体坐标系y方向线速度
+            _odomMsg.twist.twist.linear.z = _velBody(2);   // 本体坐标系z方向线速度
+            _odomMsg.twist.twist.angular.x = _wBody(0);    // 本体坐标系x轴角速度
+            _odomMsg.twist.twist.angular.y = _wBody(1);    // 本体坐标系y轴角速度
+            _odomMsg.twist.twist.angular.z = _wBody(2);    // 本体坐标系z轴角速度
+            
+            // 设置速度协方差
             _odomMsg.twist.covariance = _odom_twist_covariance;
 
+            // 发布里程计消息
             _pub.publish(_odomMsg);
             _count = 1;
         }
@@ -218,18 +509,39 @@ void Estimator::run(){
     #endif  // COMPILE_WITH_MOVE_BASE
 }
 
+// ====================== 状态查询接口函数 ======================
+
+/**
+ * 获取机器人当前位置估计值
+ * @return Vec3 机器人在全局坐标系下的位置 [x, y, z]
+ */
 Vec3 Estimator::getPosition(){
-    return _xhat.segment(0, 3);
+    return _xhat.segment(0, 3);  // 状态向量的前3个元素
 }
 
+/**
+ * 获取机器人当前速度估计值  
+ * @return Vec3 机器人在全局坐标系下的速度 [vx, vy, vz]
+ */
 Vec3 Estimator::getVelocity(){
-    return _xhat.segment(3, 3);
+    return _xhat.segment(3, 3);  // 状态向量的第4-6个元素
 }
 
+/**
+ * 获取指定足端的全局位置
+ * @param i 足端索引 (0-3分别对应四个足端)
+ * @return Vec3 第i个足端在全局坐标系下的位置
+ * 
+ * 计算方法：机器人位置 + 旋转变换后的足端相对位置
+ */
 Vec3 Estimator::getFootPos(int i){
     return getPosition() + _lowState->getRotMat() * _robModel->getFootPosition(*_lowState, i, FrameType::BODY);
 }
 
+/**
+ * 获取所有足端的全局位置
+ * @return Vec34 4x3矩阵，每列代表一个足端的全局位置
+ */
 Vec34 Estimator::getFeetPos(){
     Vec34 feetPos;
     for(int i(0); i < 4; ++i){
@@ -238,14 +550,29 @@ Vec34 Estimator::getFeetPos(){
     return feetPos;
 }
 
+/**
+ * 获取所有足端的全局速度
+ * @return Vec34 4x3矩阵，每列代表一个足端的全局速度
+ * 
+ * 计算方法：足端相对于机器人的速度 + 机器人本体速度
+ */
 Vec34 Estimator::getFeetVel(){
+    // 先获取足端相对于机器人本体的速度（全局坐标系表示）
     Vec34 feetVel = _robModel->getFeet2BVelocities(*_lowState, FrameType::GLOBAL);
+    
+    // 加上机器人本体速度，得到足端在全局坐标系下的绝对速度
     for(int i(0); i < 4; ++i){
         feetVel.col(i) += getVelocity();
     }
     return feetVel;
 }
 
+/**
+ * 获取所有足端相对于机器人本体的全局位置向量
+ * @return Vec34 4x3矩阵，每列代表一个足端相对于机器人本体的位置向量（全局坐标系）
+ * 
+ * 计算方法：足端全局位置 - 机器人本体全局位置
+ */
 Vec34 Estimator::getPosFeet2BGlobal(){
     Vec34 feet2BPos;
     for(int i(0); i < 4; ++i){
@@ -253,4 +580,3 @@ Vec34 Estimator::getPosFeet2BGlobal(){
     }
     return feet2BPos;
 }
-

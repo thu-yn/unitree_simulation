@@ -352,44 +352,31 @@ void State_Trotting::calcCmd(){
 * 基于经典的PD控制理论，结合四足机器人的动力学特性
 */
 void State_Trotting::calcTau(){
-    /**
-    * 计算位置和速度误差
-    * 这些误差是控制器的输入信号
-    */
-    _posError = _pcd - _posBody;                    // 位置误差
-    _velError = _vCmdGlobal - _velBody;             // 速度误差
+    _posError = _pcd - _posBody;
+    _velError = _vCmdGlobal - _velBody;
 
-    /**
-    * 计算期望线性加速度
-    * 使用PD控制器：ddP = Kp*e_pos + Kd*e_vel
-    */
     _ddPcd = _Kpp * _posError + _Kdp * _velError;
+    _dWbd  = _kpw*rotMatToExp(_Rd*_G2B_RotMat) + _Kdw * (_wCmdGlobal - _lowState->getGyroGlobal());
 
-    /**
-    * 计算期望角加速度
-    * 基于旋转矩阵误差和角速度误差
-    */
-    _dWbd = _kpw*rotMatToExp(_Rd*_G2B_RotMat) + _Kdw*(_wCmdGlobal - _lowState->getGyroGlobal());
+    _ddPcd(0) = saturation(_ddPcd(0), Vec2(-3, 3));
+    _ddPcd(1) = saturation(_ddPcd(1), Vec2(-3, 3));
+    _ddPcd(2) = saturation(_ddPcd(2), Vec2(-5, 5));
 
-    /**
-    * 调用平衡控制器计算足端力
-    * 平衡控制器将期望加速度转换为各足端所需的支撑力
-    */
-    _balCtrl->calF(_ddPcd, _dWbd, _B2G_RotMat, _posFeet2BGlobal, _forceFeetGlobal);
+    _dWbd(0) = saturation(_dWbd(0), Vec2(-40, 40));
+    _dWbd(1) = saturation(_dWbd(1), Vec2(-40, 40));
+    _dWbd(2) = saturation(_dWbd(2), Vec2(-10, 10));
 
-    /**
-    * 坐标变换：全局力转换为机体力
-    * 便于后续的关节力矩计算
-    */
+    _forceFeetGlobal = - _balCtrl->calF(_ddPcd, _dWbd, _B2G_RotMat, _posFeet2BGlobal, *_contact);
+
     for(int i(0); i<4; ++i){
-        _forceFeetBody.col(i) = _G2B_RotMat * _forceFeetGlobal.col(i);
+        if((*_contact)(i) == 0){
+            _forceFeetGlobal.col(i) = _KpSwing*(_posFeetGlobalGoal.col(i) - _posFeetGlobal.col(i)) + _KdSwing*(_velFeetGlobalGoal.col(i)-_velFeetGlobal.col(i));
+        }
     }
 
-    /**
-    * 计算关节力矩
-    * 通过雅可比矩阵将足端力转换为关节力矩
-    */
-    _robModel->getJointTorque(_tau, _forceFeetBody);
+    _forceFeetBody = _G2B_RotMat * _forceFeetGlobal;
+    _q = vec34ToVec12(_lowState->getQ());
+    _tau = _robModel->getTau(_q, _forceFeetBody);
 }
 
 /**
@@ -399,6 +386,10 @@ void State_Trotting::calcTau(){
 * 这是运动学控制的核心部分
 */
 void State_Trotting::calcQQd(){
+
+    Vec34 _posFeet2B;
+    _posFeet2B = _robModel->getFeet2BPositions(*_lowState,FrameType::BODY);
+    
     /**
     * 坐标变换：将全局足端目标转换为机体坐标系
     * 逆运动学需要在机体坐标系下进行计算
@@ -408,18 +399,6 @@ void State_Trotting::calcQQd(){
         _velFeet2BGoal.col(i) = _G2B_RotMat * (_velFeetGlobalGoal.col(i) - _velBody);
     }
 
-    /**
-    * 逆运动学计算
-    * 根据足端位置计算关节角度
-    */
-    _robModel->getQ(_posFeet2BGoal, _qGoal);
-    
-    /**
-    * 雅可比矩阵计算关节速度
-    * 根据足端速度计算关节角速度
-    */
-    _robModel->getQd(_posFeet2BGoal, _velFeet2BGoal, _qdGoal);
+    _qGoal = vec12ToVec34(_robModel->getQ(_posFeet2BGoal, FrameType::BODY));
+    _qdGoal = vec12ToVec34(_robModel->getQd(_posFeet2B, _velFeet2BGoal, FrameType::BODY));
 }
-
-// 注意：这里源码可能不完整，部分函数实现可能在其他地方
-// calcBalanceKp() 函数可能是空实现或在其他文件中
