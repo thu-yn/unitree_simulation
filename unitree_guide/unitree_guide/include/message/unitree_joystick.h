@@ -1,44 +1,101 @@
 /**********************************************************************
- Copyright (c) 2020-2023, Unitree Robotics.Co.Ltd. All rights reserved.
+ * 文件名: unitree_joystick.h
+ * 作用: 定义Unitree机器人游戏手柄/摇杆控制器的数据结构和按键映射
+ * 
+ * 文件功能说明:
+ * 本文件是Unitree机器人控制系统中专门用于处理游戏手柄输入的头文件。
+ * 它定义了手柄按键的位域结构和完整的手柄数据包格式，用于：
+ * 1. 解析来自无线手柄的按键状态（16个按键的组合状态）
+ * 2. 处理模拟摇杆的坐标数据（左摇杆XY轴，右摇杆XY轴）
+ * 3. 处理模拟扳机键的压力值（L2扳机键）
+ * 4. 为机器人运动控制提供人机交互接口
+ * 
+ * 适用场景:
+ * - 四足机器人的遥控操作
+ * - 机器人运动模式切换
+ * - 实时运动参数调节
+ * - 紧急停止等安全控制
+ * 
+ * Copyright (c) 2020-2023, Unitree Robotics.Co.Ltd. All rights reserved.
 ***********************************************************************/
+
 #ifndef UNITREE_JOYSTICK_H
 #define UNITREE_JOYSTICK_H
 
 #include <stdint.h>
-// 16b
+
+/**
+ * 联合体: xKeySwitchUnion
+ * 作用: 游戏手柄按键状态的位域映射结构
+ * 
+ * 功能说明:
+ * 该联合体巧妙地将16个独立的按键状态映射到一个16位的整数中。
+ * 通过位域技术，每个按键只占用1个比特位，实现高效的存储和传输。
+ * 
+ * 数据大小: 16位 (2字节)
+ * 
+ * 按键布局说明:
+ * - 肩键: R1/L1 (右/左肩键), R2/L2 (右/左扳机键)
+ * - 系统键: start (开始键), select (选择键)
+ * - 功能键: F1, F2 (自定义功能键)
+ * - 动作键: A, B, X, Y (主要操作按键)
+ * - 方向键: up, down, left, right (十字方向键)
+ */
 typedef union {
     struct {
-        uint8_t R1          :1;
-        uint8_t L1          :1;
-        uint8_t start       :1;
-        uint8_t select      :1;
-        uint8_t R2          :1;
-        uint8_t L2          :1;
-        uint8_t F1          :1;
-        uint8_t F2          :1;
-        uint8_t A           :1;
-        uint8_t B           :1;
-        uint8_t X           :1;
-        uint8_t Y           :1;
-        uint8_t up          :1;
-        uint8_t right       :1;
-        uint8_t down        :1;
-        uint8_t left        :1;
-    } components;
-    uint16_t value;
+        uint8_t R1          :1;     // 右肩键 - 通常用于触发特殊动作或模式切换
+        uint8_t L1          :1;     // 左肩键 - 通常用于辅助功能或备用操作
+        uint8_t start       :1;     // 开始键 - 通常用于启动/暂停机器人程序
+        uint8_t select      :1;     // 选择键 - 通常用于菜单选择或模式切换
+        uint8_t R2          :1;     // 右扳机键数字状态 - 扳机键的开关状态（非压力值）
+        uint8_t L2          :1;     // 左扳机键数字状态 - 扳机键的开关状态（非压力值）
+        uint8_t F1          :1;     // 自定义功能键1 - 用户可编程按键
+        uint8_t F2          :1;     // 自定义功能键2 - 用户可编程按键
+        uint8_t A           :1;     // A键 - 主要确认/执行按键
+        uint8_t B           :1;     // B键 - 取消/返回按键
+        uint8_t X           :1;     // X键 - 辅助功能按键
+        uint8_t Y           :1;     // Y键 - 辅助功能按键
+        uint8_t up          :1;     // 方向键上 - 向前移动或菜单向上
+        uint8_t right       :1;     // 方向键右 - 向右移动或菜单向右
+        uint8_t down        :1;     // 方向键下 - 向后移动或菜单向下
+        uint8_t left        :1;     // 方向键左 - 向左移动或菜单向左
+    } components;                   // 按键组件结构体 - 提供按键名称访问方式
+    uint16_t value;                 // 整体数值 - 将所有按键状态作为一个16位整数处理
 } xKeySwitchUnion;
 
-// 40 Byte (now used 24B)
+/**
+ * 结构体: xRockerBtnDataStruct  
+ * 作用: 完整的游戏手柄数据包结构
+ * 
+ * 功能说明:
+ * 这是手柄通信的完整数据包格式，包含了所有手柄输入信息：
+ * 1. 数据包头部标识
+ * 2. 所有按键的状态信息
+ * 3. 模拟摇杆的坐标数据
+ * 4. 模拟扳机的压力值
+ * 5. 预留的扩展空间
+ * 
+ * 总大小: 40字节 (当前实际使用24字节)
+ * 
+ * 数据传输说明:
+ * 该结构体设计考虑了数据对齐和未来扩展性，预留了16字节的空间
+ * 用于可能的协议升级或附加功能。
+ */
 typedef struct {
-    uint8_t head[2];
-    xKeySwitchUnion btn;
-    float lx;
-    float rx;
-    float ry;
-    float L2;
-    float ly;
-
-    uint8_t idle[16];
+    uint8_t head[2];                // 数据包头部 - 2字节的包头标识符，用于数据包同步和校验
+    
+    xKeySwitchUnion btn;            // 按键状态联合体 - 包含所有16个按键的当前按下状态
+    
+    // 模拟摇杆坐标数据（浮点数，范围通常为-1.0到+1.0）
+    float lx;                       // 左摇杆X轴坐标 - 控制机器人左右转向或横向移动
+    float rx;                       // 右摇杆X轴坐标 - 控制机器人旋转或精细横向调节  
+    float ry;                       // 右摇杆Y轴坐标 - 控制机器人俯仰或精细前后调节
+    
+    float L2;                       // L2扳机键模拟压力值 - 浮点数表示按压深度，用于速度控制
+    
+    float ly;                       // 左摇杆Y轴坐标 - 控制机器人前进后退移动
+    
+    uint8_t idle[16];              // 预留空间 - 16字节的保留区域，用于协议扩展或未来功能添加
 } xRockerBtnDataStruct;
 
 #endif  // UNITREE_JOYSTICK_H

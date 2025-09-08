@@ -1,46 +1,226 @@
 /**********************************************************************
- Copyright (c) 2020-2023, Unitree Robotics.Co.Ltd. All rights reserved.
+Copyright (c) 2020-2023, Unitree Robotics.Co.Ltd. All rights reserved.
 ***********************************************************************/
+
+/**
+* @file FeetEndCal.cpp
+* @brief 足端位置计算类实现文件
+* 
+* 【文件作用】
+* 这个文件实现了四足机器人的足端位置计算功能，是步态生成系统的核心组件之一。
+* 主要功能包括：
+* 1. 根据机器人当前状态和期望运动命令，预测下一步的最佳足端落脚点
+* 2. 考虑机器人的动力学特性，包括速度、加速度、偏航角等因素
+* 3. 结合步态相位信息，为每条腿计算精确的目标位置
+* 4. 为步态生成器提供平滑、稳定的足端轨迹规划基础
+* 
+* 该类在整个控制系统中的位置：
+* 用户命令 → 状态机 → 步态生成器 → FeetEndCal(本文件) → 平衡控制器 → 关节控制
+*/
+
 #include "Gait/FeetEndCal.h"
 
+/**
+* @brief FeetEndCal类的构造函数
+* @param ctrlComp 控制组件集合指针，包含系统所需的各种控制模块
+* 
+* 【功能说明】
+* 初始化足端计算器，设置基本参数并计算每条腿相对机体中心的几何信息。
+* 这些预计算的几何参数将在后续的足端位置计算中重复使用，提高计算效率。
+*/
 FeetEndCal::FeetEndCal(CtrlComponents *ctrlComp)
-           : _est(ctrlComp->estimator), _lowState(ctrlComp->lowState),
-             _robModel(ctrlComp->robotModel){
-    _Tstance  = ctrlComp->waveGen->getTstance();
-    _Tswing   = ctrlComp->waveGen->getTswing();
+        : _est(ctrlComp->estimator),        // 状态估计器指针：提供机器人位置、速度、姿态信息
+          _lowState(ctrlComp->lowState),    // 底层状态指针：提供IMU数据、关节状态等原始传感器信息
+          _robModel(ctrlComp->robotModel)   // 机器人模型指针：提供运动学参数和几何信息
+{
+    // 从步态生成器获取步态时序参数
+    _Tstance  = ctrlComp->waveGen->getTstance();    // 支撑相持续时间（腿接触地面的时间）
+    _Tswing   = ctrlComp->waveGen->getTswing();     // 摆动相持续时间（腿离开地面的时间）
 
-    _kx = 0.005;
-    _ky = 0.005;
-    _kyaw = 0.005;
+    // 设置足端位置预测的控制增益
+    // 这些增益决定了机器人对速度误差的响应强度，影响步态的稳定性和响应性
+    _kx = 0.005;    // X方向（前进/后退）速度误差修正增益
+    _ky = 0.005;    // Y方向（左右移动）速度误差修正增益
+    _kyaw = 0.005;  // 偏航角速度误差修正增益
 
+    // 获取机器人理想的足端位置（机体坐标系下）
+    // 这是机器人静止站立时，四条腿相对于机体中心的理想位置
     Vec34 feetPosBody = _robModel->getFeetPosIdeal();
+    
+    // 对每条腿计算几何参数
+    // 这些参数描述了每条腿相对于机体中心的极坐标位置
     for(int i(0); i<4; ++i){
-        _feetRadius(i)    = sqrt( pow(feetPosBody(0, i), 2) + pow(feetPosBody(1, i), 2) );
+        // 计算第i条腿相对机体中心的距离（极坐标的半径）
+        // 使用勾股定理：r = sqrt(x² + y²)
+        _feetRadius(i) = sqrt( pow(feetPosBody(0, i), 2) + pow(feetPosBody(1, i), 2) );
+        
+        // 计算第i条腿相对机体中心的初始角度（极坐标的角度）
+        // 使用反正切函数：θ = atan2(y, x)
+        // atan2函数相比atan能正确处理所有象限的角度
         _feetInitAngle(i) = atan2(feetPosBody(1, i), feetPosBody(0, i));
     }
+    
+    /*
+    * 【几何参数说明】
+    * _feetRadius和_feetInitAngle定义了每条腿的"家位置"：
+    * - 前右腿(FR, i=0)：通常在第四象限，角度约-45°
+    * - 前左腿(FL, i=1)：通常在第一象限，角度约+45°
+    * - 后右腿(RR, i=2)：通常在第三象限，角度约-135°
+    * - 后左腿(RL, i=3)：通常在第二象限，角度约+135°
+    */
 }
 
+/**
+* @brief FeetEndCal类的析构函数
+* 
+* 【功能说明】
+* 清理资源，当前实现为空，因为类中使用的都是指针引用，
+* 实际的内存管理由CtrlComponents负责。
+*/
 FeetEndCal::~FeetEndCal(){
-
+    // 析构函数为空，所有指针资源由外部管理
 }
 
+/**
+* @brief 计算指定腿的下一步足端位置
+* @param legID 腿部ID（0:前右, 1:前左, 2:后右, 3:后左）
+* @param vxyGoalGlobal 期望的全局平面速度（XY方向）[m/s]
+* @param dYawGoal 期望的偏航角速度（绕Z轴旋转）[rad/s]
+* @param phase 当前腿的步态相位（0.0-1.0，0表示开始摆动，1表示即将着地）
+* @return Vec3 计算得到的足端目标位置（全局坐标系）[m]
+* 
+* 【核心算法】
+* 这是整个类的核心函数，实现了基于预测性的足端位置计算算法。
+* 算法考虑以下因素：
+* 1. 机器人当前的运动状态（位置、速度、姿态）
+* 2. 期望的运动命令（速度、转向）
+* 3. 步态时序（支撑相、摆动相时间）
+* 4. 机器人的几何约束（腿的长度和位置）
+* 5. 动力学预测（考虑惯性和响应延迟）
+*/
 Vec3 FeetEndCal::calFootPos(int legID, Vec2 vxyGoalGlobal, float dYawGoal, float phase){
+    
+    // ==================== 获取当前机器人状态 ====================
+    
+    // 获取机体在全局坐标系下的线速度 [m/s]
     _bodyVelGlobal = _est->getVelocity();
+    
+    // 获取机体在全局坐标系下的角速度 [rad/s]
+    // 注意：这里虽然获取了角速度，但在后续计算中主要使用偏航角速度
     _bodyWGlobal = _lowState->getGyroGlobal();
 
-    _nextStep(0) = _bodyVelGlobal(0)*(1-phase)*_Tswing + _bodyVelGlobal(0)*_Tstance/2 + _kx*(_bodyVelGlobal(0) - vxyGoalGlobal(0));
-    _nextStep(1) = _bodyVelGlobal(1)*(1-phase)*_Tswing + _bodyVelGlobal(1)*_Tstance/2 + _ky*(_bodyVelGlobal(1) - vxyGoalGlobal(1));
+    // ==================== 计算足端的基础预测位置 ====================
+    
+    /*
+    * 【算法原理】
+    * 足端的预测位置由三部分组成：
+    * 1. 当前摆动相剩余时间内机器人的位移
+    * 2. 下一个支撑相期间机器人位移的一半（假设腿在支撑相中点着地）
+    * 3. 基于速度误差的修正项（PID控制思想）
+    */
+    
+    // X方向（前后）的足端预测位置
+    _nextStep(0) = _bodyVelGlobal(0) * (1-phase) * _Tswing               // 摆动相剩余时间的位移
+                        + _bodyVelGlobal(0) * _Tstance/2                        // 支撑相一半时间的位移
+                        + _kx * (_bodyVelGlobal(0) - vxyGoalGlobal(0));  // 速度误差修正
+    
+    // Y方向（左右）的足端预测位置  
+    _nextStep(1) = _bodyVelGlobal(1) * (1-phase) * _Tswing    // 摆动相剩余时间的位移
+                + _bodyVelGlobal(1) * _Tstance/2             // 支撑相一半时间的位移
+                + _ky * (_bodyVelGlobal(1) - vxyGoalGlobal(1)); // 速度误差修正
+    
+    // Z方向（垂直）设为0，表示足端目标位置在地面上
     _nextStep(2) = 0;
 
-    _yaw = _lowState->getYaw();
-    _dYaw = _lowState->getDYaw();
-    _nextYaw = _dYaw*(1-phase)*_Tswing + _dYaw*_Tstance/2 + _kyaw*(dYawGoal - _dYaw);
+    // ==================== 计算偏航角相关的预测 ====================
+    
+    // 获取当前机体的偏航角和偏航角速度
+    _yaw = _lowState->getYaw();      // 当前偏航角 [rad]
+    _dYaw = _lowState->getDYaw();    // 当前偏航角速度 [rad/s]
+    
+    // 预测在足端着地时的偏航角变化
+    // 计算方法与线速度预测类似：摆动相剩余时间 + 支撑相一半时间 + 误差修正
+    _nextYaw = _dYaw * (1-phase) * _Tswing           // 摆动相剩余时间的角度变化
+            + _dYaw * _Tstance/2                    // 支撑相一半时间的角度变化  
+            + _kyaw * (dYawGoal - _dYaw);           // 角速度误差修正
 
+    // ==================== 考虑机器人几何约束 ====================
+    
+    /*
+    * 【几何变换说明】
+    * 机器人在转动时，每条腿的理想位置会发生变化。
+    * 这里使用极坐标变换来计算腿在新姿态下的相对位置。
+    * 
+    * 变换公式：
+    * x = r * cos(θ + Δθ)
+    * y = r * sin(θ + Δθ)
+    * 其中：r是腿到机体中心的距离，θ是初始角度，Δθ是角度变化量
+    */
+    
+    // 将该腿的几何约束考虑进足端位置
+    // 这确保了足端位置符合机器人的物理结构限制
     _nextStep(0) += _feetRadius(legID) * cos(_yaw + _feetInitAngle(legID) + _nextYaw);
     _nextStep(1) += _feetRadius(legID) * sin(_yaw + _feetInitAngle(legID) + _nextYaw);
 
+    // ==================== 计算最终的全局足端位置 ====================
+    
+    // 将相对位移叠加到当前机体位置上，得到足端的全局目标位置
     _footPos = _est->getPosition() + _nextStep;
+    
+    // 强制将Z坐标设为0，确保足端目标在地面上
+    // 这是一个重要的约束，防止足端目标位置出现在地面以下
     _footPos(2) = 0.0;
 
+    /*
+    * 【返回值说明】
+    * 返回的Vec3包含：
+    * - _footPos(0): 足端目标位置的X坐标（全局坐标系）[m]
+    * - _footPos(1): 足端目标位置的Y坐标（全局坐标系）[m]  
+    * - _footPos(2): 足端目标位置的Z坐标，固定为0.0（地面）[m]
+    */
+    
     return _footPos;
 }
+
+/*
+* ==================== 算法设计思想总结 ====================
+* 
+* 1. 【预测性控制】
+*    - 不仅考虑当前状态，还预测未来的机器人位置
+*    - 通过相位信息动态调整预测时间窗口
+*    - 提前规划，确保步态的连续性和稳定性
+* 
+* 2. 【多因素综合】
+*    - 线性运动：考虑XY方向的平移运动
+*    - 旋转运动：考虑偏航角的旋转运动
+*    - 几何约束：考虑机器人身体结构的限制
+*    - 动力学特性：通过增益参数调节响应特性
+* 
+* 3. 【自适应调节】
+*    - 基于速度误差的反馈修正机制
+*    - 类似PID控制器的思想，提高跟踪精度
+*    - 增强对外界干扰的鲁棒性
+* 
+* 4. 【计算效率】
+*    - 预计算几何参数，避免重复计算
+*    - 使用简化的物理模型，平衡精度和实时性
+*    - 适合500Hz高频控制循环
+* 
+* 5. 【工程实用性】
+*    - 考虑实际机器人的物理约束
+*    - 提供可调参数满足不同应用需求
+*    - 与整个控制系统架构良好集成
+* 
+* ==================== 参数调优指南 ====================
+* 
+* 增益参数调节建议：
+* - _kx, _ky：控制平移运动的响应速度，值越大响应越快但可能不稳定
+* - _kyaw：控制旋转运动的响应速度，需要与_kx、_ky协调调节
+* - 典型值范围：0.001 ~ 0.01，具体值需要根据机器人特性和应用场景调节
+* 
+* 调试方法：
+* 1. 在仿真环境中测试不同参数的效果
+* 2. 观察机器人的步态稳定性和响应速度
+* 3. 监控足端轨迹是否符合预期
+* 4. 根据实际性能需求进行微调
+*/

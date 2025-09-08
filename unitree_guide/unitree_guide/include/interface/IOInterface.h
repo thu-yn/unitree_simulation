@@ -4,21 +4,210 @@
 #ifndef IOINTERFACE_H
 #define IOINTERFACE_H
 
-#include "message/LowlevelCmd.h"
-#include "message/LowlevelState.h"
-#include "interface/CmdPanel.h"
-#include <string>
+// ==================== 文件作用说明 ====================
+/**
+ * @file IOInterface.h
+ * @brief Unitree四足机器人控制框架的抽象IO接口基类
+ * 
+ * 【文件作用】：
+ * 这个文件定义了Unitree机器人控制系统中所有IO通信接口的抽象基类。
+ * IOInterface作为核心的接口层，为上层控制逻辑提供了统一的通信抽象，
+ * 使得控制代码能够在仿真环境（Gazebo/ROS）和真实机器人硬件之间无缝切换。
+ * 
+ * 【设计理念】：
+ * - 接口统一：为仿真和真实机器人提供统一的通信接口
+ * - 多态设计：通过虚函数支持不同的IO实现（IOROS、IOSDK）
+ * - 命令管理：集成CmdPanel命令面板，统一处理用户输入
+ * - 资源管理：负责cmdPanel的内存管理
+ * 
+ * 【继承关系】：
+ * IOInterface (抽象基类)
+ *     ├── IOROS    - ROS/Gazebo仿真环境接口实现
+ *     └── IOSDK    - 真实机器人SDK接口实现
+ */
 
+// ==================== 头文件包含 ====================
+#include "message/LowlevelCmd.h"      // 底层控制命令消息定义
+#include "message/LowlevelState.h"    // 底层状态反馈消息定义
+#include "interface/CmdPanel.h"       // 命令面板基类（处理用户输入）
+#include <string>                     // 标准字符串库
+
+// ==================== IO接口抽象基类 ====================
+/**
+ * @class IOInterface
+ * @brief Unitree机器人IO通信的抽象基类
+ * 
+ * 这个类定义了机器人控制系统与外部环境（仿真或真实机器人）
+ * 通信的标准接口。通过这个抽象层，控制逻辑可以透明地
+ * 运行在不同的平台上。
+ * 
+ * 【核心职责】：
+ * 1. 定义统一的发送/接收接口
+ * 2. 管理命令面板（用户输入处理）
+ * 3. 提供基础的控制状态管理
+ * 4. 处理资源的生命周期管理
+ */
 class IOInterface{
 public:
-IOInterface(){}
-~IOInterface(){delete cmdPanel;}
-virtual void sendRecv(const LowlevelCmd *cmd, LowlevelState *state) = 0;
-void zeroCmdPanel(){cmdPanel->setZero();}
-void setPassive(){cmdPanel->setPassive();}
+    // ==================== 构造与析构函数 ====================
+    
+    /**
+     * @brief 默认构造函数
+     * 
+     * 创建IOInterface对象时的初始化。
+     * 注意：这里只是创建基类对象，具体的初始化工作
+     * 在派生类（IOROS或IOSDK）的构造函数中完成。
+     */
+    IOInterface(){}
+    
+    /**
+     * @brief 虚析构函数
+     * 
+     * 确保派生类对象能够正确析构，并负责清理命令面板资源。
+     * 
+     * 【重要说明】：
+     * - 使用virtual确保多态析构的正确性
+     * - 自动删除cmdPanel，避免内存泄漏
+     * - 派生类的析构函数会在此之前被调用
+     */
+    ~IOInterface(){
+        delete cmdPanel;  // 清理命令面板资源，防止内存泄漏
+    }
+    
+    // ==================== 纯虚函数接口 ====================
+    
+    /**
+     * @brief 发送控制命令并接收机器人状态的核心接口
+     * @param cmd 指向底层控制命令的常量指针，包含要发送给机器人的控制指令
+     * @param state 指向底层状态的指针，用于接收机器人返回的状态信息
+     * 
+     * 【功能说明】：
+     * 这是整个IO系统的核心函数，执行一次完整的通信周期：
+     * 1. 将控制命令发送给机器人（仿真环境或真实硬件）
+     * 2. 从机器人接收最新的状态信息
+     * 3. 更新state参数中的所有状态数据
+     * 
+     * 【实现差异】：
+     * - IOROS实现：通过ROS话题与Gazebo仿真器通信
+     * - IOSDK实现：通过UDP协议与真实机器人硬件通信
+     * 
+     * 【调用频率】：
+     * 通常以500Hz的频率被主控制循环调用，确保实时性
+     * 
+     * 【线程安全】：
+     * 实现类需要考虑线程安全性，特别是在多线程环境中
+     */
+    virtual void sendRecv(const LowlevelCmd *cmd, LowlevelState *state) = 0;
+    
+    // ==================== 命令面板控制接口 ====================
+    
+    /**
+     * @brief 将命令面板的所有用户输入值归零
+     * 
+     * 【使用场景】：
+     * - 系统初始化时
+     * - 紧急停止时
+     * - 状态切换时需要清空用户输入
+     * 
+     * 【功能详述】：
+     * 调用cmdPanel->setZero()将所有用户输入值重置为0：
+     * - 摇杆值归零（lx, ly, rx, ry = 0）
+     * - 触发器值归零（L2 = 0）
+     * - 确保机器人不会受到残留输入的影响
+     */
+    void zeroCmdPanel(){
+        cmdPanel->setZero();
+    }
+    
+    /**
+     * @brief 将机器人设置为被动模式
+     * 
+     * 【功能说明】：
+     * 通过设置用户命令为L2_B，将机器人切换到被动（PASSIVE）状态。
+     * 在被动状态下，机器人会：
+     * - 关闭所有主动控制
+     * - 关节变为柔顺模式
+     * - 机器人会自然地"躺下"
+     * 
+     * 【安全机制】：
+     * 这是一个重要的安全功能，用于：
+     * - 紧急停止时的安全状态
+     * - 系统启动时的初始状态
+     * - 异常情况下的保护状态
+     * 
+     * 【调用时机】：
+     * - 系统启动时
+     * - 检测到异常时
+     * - 用户主动要求停止时
+     */
+    void setPassive(){
+        cmdPanel->setPassive();  // 设置用户命令为L2_B（被动模式）
+    }
 
 protected:
-CmdPanel *cmdPanel;
+    // ==================== 受保护成员变量 ====================
+    
+    /**
+     * @brief 命令面板指针
+     * 
+     * 【作用说明】：
+     * 指向命令面板对象的指针，用于处理用户输入。根据不同的使用场景，
+     * cmdPanel可能指向不同的实现：
+     * - KeyBoard：键盘输入处理（主要用于仿真环境）
+     * - WirelessHandle：无线手柄输入处理（主要用于真实机器人）
+     * 
+     * 【内存管理】：
+     * - 由派生类在构造函数中分配（new操作）
+     * - 由基类在析构函数中释放（delete操作）
+     * - 确保资源的正确管理，避免内存泄漏
+     * 
+     * 【访问权限】：
+     * protected权限确保：
+     * - 派生类可以直接访问和修改
+     * - 外部代码不能直接访问，保持封装性
+     * - 通过公共接口（zeroCmdPanel、setPassive）间接操作
+     * 
+     * 【多态性】：
+     * CmdPanel是抽象基类，cmdPanel实际指向的是其派生类对象，
+     * 体现了多态性的设计理念。
+     */
+    CmdPanel *cmdPanel;
 };
 
-#endif  //IOINTERFACE_H
+#endif  // IOINTERFACE_H
+
+// ==================== 补充说明 ====================
+/**
+ * 【使用示例】：
+ * 
+ * // 在控制系统中的典型使用方式
+ * IOInterface *ioInterface;
+ * 
+ * #ifdef COMPILE_WITH_ROS
+ *     ioInterface = new IOROS();        // 仿真环境
+ * #else
+ *     ioInterface = new IOSDK();        // 真实机器人
+ * #endif
+ * 
+ * // 主控制循环（500Hz）
+ * while(running) {
+ *     // 准备控制命令
+ *     LowlevelCmd cmd;
+ *     LowlevelState state;
+ *     
+ *     // 执行一次通信周期
+ *     ioInterface->sendRecv(&cmd, &state);
+ *     
+ *     // 处理接收到的状态信息
+ *     processState(state);
+ * }
+ * 
+ * delete ioInterface;  // 自动调用虚析构函数
+ * 
+ * 【设计优势】：
+ * 1. 统一接口：控制逻辑无需关心底层通信细节
+ * 2. 易于切换：仿真和实物之间的切换只需改变一行代码
+ * 3. 易于扩展：新的IO实现只需继承IOInterface并实现sendRecv
+ * 4. 资源安全：通过RAII机制确保资源的正确管理
+ * 5. 类型安全：通过虚函数确保接口调用的类型安全性
+ */
